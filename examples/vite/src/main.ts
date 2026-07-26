@@ -1,5 +1,6 @@
 import {
   AceStepWebGpu,
+  AceStepWebGpuError,
   DEFAULT_INSTRUMENTAL_PROMPT,
   type CacheInventory,
   type WorkerUpdate,
@@ -253,7 +254,12 @@ generate.addEventListener("click", async () => {
     appendLog("Generation completed. Listen to the entire result.");
   } catch (error) {
     stage.textContent = "generation stopped";
-    detail.textContent = error instanceof Error ? error.message : String(error);
+    detail.textContent =
+      error instanceof AceStepWebGpuError
+        ? `${error.stage}: ${error.message}`
+        : error instanceof Error
+          ? error.message
+          : String(error);
     appendLog(detail.textContent);
   } finally {
     appBusy = false;

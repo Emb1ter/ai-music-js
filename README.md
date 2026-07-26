@@ -169,7 +169,7 @@ file for deployment checks or self-hosting.
 - 10–120-second dynamic duration
 - 48 kHz stereo `AudioBuffer` and PCM16 WAV output
 - Heavy XL condition and DiT inference on WebGPU
-- WASM compatibility fallback and VAE correctness path
+- WASM compatibility fallback and memory-bounded VAE correctness path
 
 ## Download size and numerical validation
 
@@ -187,6 +187,13 @@ latent, and deterministic browser-compatible noise:
 The 20-second tensors remain finite and non-collapsed, but INT4 divergence
 increases with duration. Long generations are supported by shape contracts,
 not guaranteed to match the Python output at the 10-second quality level.
+
+The VAE decodes ten-second cores with two seconds of convolution context on
+each internal boundary, then crops and joins the cores. In standalone
+validation, a one-shot 60-second WASM decode failed at approximately 4.13 GB
+RSS with `std::bad_alloc`; the six-chunk decode completed at approximately
+3.01 GB peak RSS. A 20-second full decode and its two-chunk equivalent were
+bit-identical, including the join.
 
 ## Unsupported
 

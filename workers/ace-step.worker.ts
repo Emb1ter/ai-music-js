@@ -21,6 +21,7 @@ import {
   SUPPORT_ASSETS,
   TOTAL_DOWNLOAD_BYTES,
   TURBO_SHIFT,
+  VAE_UPSAMPLE_FACTOR,
   buildCaptionPrompt,
   durationToAudioFrames,
   durationToLatentFrames,
@@ -35,6 +36,7 @@ import {
   tensorSummary,
   type TensorSummary,
 } from "@/lib/tensor-diagnostics";
+import { createVaeDecodePlan } from "@/lib/vae-chunking";
 import type {
   CacheInventory,
   CachedAssetInfo,
@@ -1309,27 +1311,101 @@ const runGeneration = async (
 
   startStage(
     "vae-decode",
-    `Decoding ${latentFrames} latent frames to ${durationSeconds} seconds of stereo PCM`,
+    `Decoding ${latentFrames} latent frames to ${durationSeconds} seconds of stereo PCM in memory-bounded chunks`,
   );
-  const channelMajorLatent = new Float32Array(latent.length);
-  for (let frame = 0; frame < latentFrames; frame += 1) {
-    for (let channel = 0; channel < LATENT_CHANNELS; channel += 1) {
-      channelMajorLatent[channel * latentFrames + frame] =
-        latent[frame * LATENT_CHANNELS + channel];
-    }
-  }
-  const vaeSession = await sessionFor("vae", allowWasmFallback);
-  const vaeOutputs = await vaeSession.run({
-    latents: new ort.Tensor(
-      "float32",
-      channelMajorLatent,
-      [1, LATENT_CHANNELS, latentFrames],
-    ),
+  const vaePlan = createVaeDecodePlan(latentFrames);
+  const waveform = new Float32Array(audioFrames * 2);
+  post({
+    type: "diagnostic",
+    key: "VAE decode chunks",
+    value: vaePlan.length,
   });
-  const waveformTensor = vaeOutputs.waveform as NumericTensor;
-  const waveform = asFloat32(waveformTensor, "decoded waveform");
-  assertShape(waveformTensor.dims, [1, 2, audioFrames], "decoded waveform");
-  recordTensor("waveform", waveformTensor.dims, waveform);
+  const vaeSession = await sessionFor("vae", allowWasmFallback);
+  try {
+    for (const chunk of vaePlan) {
+      const inputFrames =
+        chunk.inputEndFrame - chunk.inputStartFrame;
+      const coreFrames =
+        chunk.coreEndFrame - chunk.coreStartFrame;
+      const chunkLatent = new Float32Array(
+        inputFrames * LATENT_CHANNELS,
+      );
+      for (
+        let inputFrame = 0;
+        inputFrame < inputFrames;
+        inputFrame += 1
+      ) {
+        const sourceFrame = chunk.inputStartFrame + inputFrame;
+        for (
+          let channel = 0;
+          channel < LATENT_CHANNELS;
+          channel += 1
+        ) {
+          chunkLatent[channel * inputFrames + inputFrame] =
+            latent[sourceFrame * LATENT_CHANNELS + channel];
+        }
+      }
+
+      const chunkStage = `vae-decode:${chunk.index + 1}`;
+      startStage(
+        chunkStage,
+        `VAE chunk ${chunk.index + 1}/${vaePlan.length} · latent frames ${chunk.coreStartFrame}-${chunk.coreEndFrame}`,
+      );
+      const inputTensor = new ort.Tensor(
+        "float32",
+        chunkLatent,
+        [1, LATENT_CHANNELS, inputFrames],
+      );
+      let vaeOutputs: ort.InferenceSession.OnnxValueMapType;
+      try {
+        vaeOutputs = await vaeSession.run({
+          latents: inputTensor,
+        });
+      } catch (error) {
+        throw new Error(
+          `VAE chunk ${chunk.index + 1}/${vaePlan.length} failed for ${coreFrames / LATENT_FRAME_RATE} seconds of output. ${error instanceof Error ? error.message : String(error)}`,
+        );
+      } finally {
+        inputTensor.dispose();
+      }
+
+      const waveformTensor = vaeOutputs.waveform as NumericTensor;
+      try {
+        const chunkAudioFrames = inputFrames * VAE_UPSAMPLE_FACTOR;
+        assertShape(
+          waveformTensor.dims,
+          [1, 2, chunkAudioFrames],
+          `decoded waveform chunk ${chunk.index + 1}`,
+        );
+        const chunkWaveform = asFloat32(
+          waveformTensor,
+          `decoded waveform chunk ${chunk.index + 1}`,
+        );
+        const cropStart =
+          chunk.cropStartFrame * VAE_UPSAMPLE_FACTOR;
+        const coreAudioFrames = coreFrames * VAE_UPSAMPLE_FACTOR;
+        const destinationStart =
+          chunk.coreStartFrame * VAE_UPSAMPLE_FACTOR;
+        for (let channel = 0; channel < 2; channel += 1) {
+          const sourceStart =
+            channel * chunkAudioFrames + cropStart;
+          waveform.set(
+            chunkWaveform.subarray(
+              sourceStart,
+              sourceStart + coreAudioFrames,
+            ),
+            channel * audioFrames + destinationStart,
+          );
+        }
+      } finally {
+        waveformTensor.dispose();
+      }
+      endStage(chunkStage);
+    }
+  } finally {
+    await vaeSession.release();
+  }
+  recordTensor("waveform", [1, 2, audioFrames], waveform);
   const channelWindowRms = (
     channel: number,
     startSecond: number,
@@ -1363,15 +1439,11 @@ const runGeneration = async (
         Math.max(leftRms, rightRms) < 0.002
       )
     ) {
-      waveformTensor.dispose();
-      await vaeSession.release();
       throw new Error(
         `VAE output collapsed after two seconds: ${startSecond}-${endSecond}s RMS is ${leftRms.toFixed(6)} L / ${rightRms.toFixed(6)} R.`,
       );
     }
   }
-  waveformTensor.dispose();
-  await vaeSession.release();
   endStage("vae-decode");
 
   startStage("audio-packaging", "Encoding stereo PCM as a playable WAV");
