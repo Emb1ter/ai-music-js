@@ -27,7 +27,9 @@
   "files": [
     "dist",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses"
   ],
   "types": "./dist/types/package-src/index.d.ts",
   "main": "./dist/index.js",

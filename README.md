@@ -201,4 +201,8 @@ endorsed by the ACE-Step authors.
 
 ## License
 
-[MIT](LICENSE)
+The original `ai-music-js` source is available under the [MIT License](LICENSE).
+The npm package also redistributes third-party Worker/WASM code, and the
+browser downloads separately licensed model artifacts at runtime. See
+[Third-party notices](THIRD_PARTY_NOTICES.md) for the applicable MIT and
+Apache-2.0 license texts and attribution.
