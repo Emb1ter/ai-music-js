@@ -71,6 +71,32 @@
         </aside>
       </section>
 
+      <section class="cache-manager" aria-labelledby="cache-title">
+        <div class="cache-heading">
+          <div>
+            <div class="eyebrow"><span></span> Browser storage</div>
+            <h2 id="cache-title">Downloaded models</h2>
+          </div>
+          <div class="cache-actions">
+            <button id="refresh-cache" class="secondary" type="button">
+              Refresh
+            </button>
+            <button id="clear-cache" class="danger" type="button">
+              Remove all
+            </button>
+          </div>
+        </div>
+        <p id="cache-summary" class="cache-summary">
+          Inspecting model files stored by this site…
+        </p>
+        <div id="cache-list" class="cache-list" aria-live="polite"></div>
+        <p class="cache-note">
+          Browser storage belongs to the exact site origin. A new ngrok
+          hostname has a separate cache; clear old origins in Chromium site
+          settings.
+        </p>
+      </section>
+
       <footer>
         <span>ai-music-js</span>
         <span>48 kHz stereo · deterministic seed · local inference</span>

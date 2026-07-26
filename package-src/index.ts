@@ -11,6 +11,7 @@ import {
   type DownloadAsset,
 } from "../lib/model-manifest";
 import type {
+  CacheInventory,
   CompleteUpdate,
   ErrorUpdate,
   WorkerAssetConfig,
@@ -31,7 +32,12 @@ export {
   TOTAL_DOWNLOAD_BYTES,
 } from "../lib/model-manifest";
 export type {
+  CachedAssetInfo,
+  CachedModelInfo,
   CacheClearedUpdate,
+  CacheInventory,
+  CacheInventoryUpdate,
+  CachedModelRemovedUpdate,
   CompatibilityUpdate,
   CompleteUpdate,
   DiagnosticUpdate,
@@ -271,6 +277,22 @@ export class AceStepWebGpu {
     }
   }
 
+  private async requestPersistentStorage() {
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.storage?.persist
+    ) {
+      return;
+    }
+    try {
+      if (!(await navigator.storage.persisted?.())) {
+        await navigator.storage.persist();
+      }
+    } catch {
+      // Compatibility and quota diagnostics are reported by the Worker.
+    }
+  }
+
   private createWorker() {
     if (this.disposed) {
       throw new Error("This ACE-Step WebGPU instance has been disposed.");
@@ -397,27 +419,73 @@ export class AceStepWebGpu {
       );
     }
 
-    return this.runWorker<AceStepGenerationResult>(
+    return this.requestPersistentStorage().then(() =>
+      this.runWorker<AceStepGenerationResult>(
+        {
+          type: "start",
+          prompt,
+          seed,
+          durationSeconds,
+          allowWasmFallback:
+            options.allowWasmFallback ??
+            this.defaultAllowWasmFallback,
+          assets: this.assets,
+        },
+        (update) => {
+          if (update.type !== "complete") {
+            return { done: false };
+          }
+          return {
+            done: true,
+            value: resultFromUpdate(update),
+          };
+        },
+        options.signal,
+      ),
+    );
+  }
+
+  /**
+   * Lists the current origin's ACE-Step files, grouped by model component.
+   * Browser storage is origin-scoped, so a different hostname has a separate
+   * inventory.
+   */
+  listCachedModels(signal?: AbortSignal): Promise<CacheInventory> {
+    return this.runWorker<CacheInventory>(
+      { type: "list-cache", assets: this.assets },
+      (update) =>
+        update.type === "cache-inventory"
+          ? { done: true, value: update.inventory }
+          : { done: false },
+      signal,
+    );
+  }
+
+  /**
+   * Removes one component returned by listCachedModels(), including all of its
+   * graph and external-data files.
+   */
+  removeCachedModel(
+    modelId: string,
+    signal?: AbortSignal,
+  ): Promise<CacheInventory> {
+    const normalizedId = modelId.trim();
+    if (!ALL_ASSETS.some((asset) => asset.group === normalizedId)) {
+      return Promise.reject(
+        new RangeError(`Unknown cached model component: ${modelId}`),
+      );
+    }
+    return this.runWorker<CacheInventory>(
       {
-        type: "start",
-        prompt,
-        seed,
-        durationSeconds,
-        allowWasmFallback:
-          options.allowWasmFallback ??
-          this.defaultAllowWasmFallback,
+        type: "remove-cached-model",
+        modelId: normalizedId,
         assets: this.assets,
       },
-      (update) => {
-        if (update.type !== "complete") {
-          return { done: false };
-        }
-        return {
-          done: true,
-          value: resultFromUpdate(update),
-        };
-      },
-      options.signal,
+      (update) =>
+        update.type === "cache-inventory"
+          ? { done: true, value: update.inventory }
+          : { done: false },
+      signal,
     );
   }
 

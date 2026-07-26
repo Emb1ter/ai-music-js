@@ -7,10 +7,35 @@ import {
   getRequiredAssets,
 } from "../package-src/index";
 import type {
+  CacheInventory,
   CompleteUpdate,
   WorkerRequest,
   WorkerUpdate,
 } from "../lib/worker-protocol";
+
+const cacheInventory: CacheInventory = {
+  origin: "https://app.example",
+  cacheName: "ai-music-js-test",
+  expectedBytes: TOTAL_DOWNLOAD_BYTES,
+  storedBytes: 2_703_943_680,
+  readyBytes: 2_703_943_680,
+  missingBytes: TOTAL_DOWNLOAD_BYTES - 2_703_943_680,
+  usageBytes: 2_800_000_000,
+  quotaBytes: 10_000_000_000,
+  availableBytes: 7_200_000_000,
+  persisted: true,
+  models: [
+    {
+      id: "dit",
+      label: "ACE-Step XL Turbo 4B DiT · INT4",
+      expectedBytes: 2_712_961_096,
+      storedBytes: 2_703_943_680,
+      complete: false,
+      partial: true,
+      assets: [],
+    },
+  ],
+};
 
 class FakeAudioBuffer {
   readonly length: number;
@@ -44,6 +69,33 @@ class FakeWorker {
     queueMicrotask(() => {
       if (request.type === "clear-cache") {
         this.emit({ type: "cache-cleared" });
+        return;
+      }
+      if (request.type === "list-cache") {
+        this.emit({ type: "cache-inventory", inventory: cacheInventory });
+        return;
+      }
+      if (request.type === "remove-cached-model") {
+        this.emit({
+          type: "cached-model-removed",
+          modelId: request.modelId,
+          removedBytes: 2_703_943_680,
+        });
+        this.emit({
+          type: "cache-inventory",
+          inventory: {
+            ...cacheInventory,
+            storedBytes: 0,
+            readyBytes: 0,
+            missingBytes: TOTAL_DOWNLOAD_BYTES,
+            models: cacheInventory.models.map((model) => ({
+              ...model,
+              storedBytes: 0,
+              complete: false,
+              partial: false,
+            })),
+          },
+        });
         return;
       }
       const left = new Float32Array([0.1, 0.2, 0.3, 0.4]);
@@ -164,5 +216,53 @@ describe("published browser API", () => {
     await runtime.clearCache();
     expect(fakeWorker.requests).toEqual([{ type: "clear-cache" }]);
     expect(fakeWorker.terminated).toBe(true);
+  });
+
+  it("lists cached model components with quota information", async () => {
+    const fakeWorker = new FakeWorker();
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => fakeWorker as unknown as Worker,
+    });
+    const inventory = await runtime.listCachedModels();
+    expect(inventory.origin).toBe("https://app.example");
+    expect(inventory.models[0]).toMatchObject({
+      id: "dit",
+      partial: true,
+    });
+    expect(fakeWorker.requests[0]).toMatchObject({
+      type: "list-cache",
+      assets: {
+        modelBaseUrl: DEFAULT_MODEL_BASE_URL,
+      },
+    });
+  });
+
+  it("removes one cached model component and returns fresh inventory", async () => {
+    const fakeWorker = new FakeWorker();
+    const updates: WorkerUpdate[] = [];
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => fakeWorker as unknown as Worker,
+      onUpdate: (update) => updates.push(update),
+    });
+    const inventory = await runtime.removeCachedModel("dit");
+    expect(inventory.models[0]?.storedBytes).toBe(0);
+    expect(fakeWorker.requests[0]).toMatchObject({
+      type: "remove-cached-model",
+      modelId: "dit",
+    });
+    expect(updates.some((update) => update.type === "cached-model-removed")).toBe(
+      true,
+    );
+  });
+
+  it("rejects unknown cache component identifiers before creating a Worker", async () => {
+    const fakeWorker = new FakeWorker();
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => fakeWorker as unknown as Worker,
+    });
+    await expect(runtime.removeCachedModel("not-a-model")).rejects.toThrow(
+      "Unknown cached model component",
+    );
+    expect(fakeWorker.requests).toEqual([]);
   });
 });

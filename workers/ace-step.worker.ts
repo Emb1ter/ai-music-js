@@ -36,6 +36,8 @@ import {
   type TensorSummary,
 } from "@/lib/tensor-diagnostics";
 import type {
+  CacheInventory,
+  CachedAssetInfo,
   WorkerAssetConfig,
   WorkerRequest,
   WorkerUpdate,
@@ -81,6 +83,8 @@ const timings: Record<string, number> = {};
 const trace: TensorSummary[] = [];
 let estimatedPeakBytes = 0;
 let runtimeAssets: WorkerAssetConfig = {};
+const MIN_STORAGE_HEADROOM_BYTES = 512_000_000;
+const PER_FILE_STORAGE_HEADROOM_BYTES = 128_000_000;
 
 const updateEstimatedPeak = (bytes: number) => {
   estimatedPeakBytes = Math.max(estimatedPeakBytes, bytes);
@@ -197,6 +201,48 @@ const opfsDirectory = async () => {
   return root.getDirectoryHandle(CACHE_NAME, { create: true });
 };
 
+const storageEstimate = async () => {
+  try {
+    return await (navigator as GpuNavigator).storage?.estimate();
+  } catch {
+    return undefined;
+  }
+};
+
+const storageNumbers = (estimate?: StorageEstimate) => {
+  const quota = estimate?.quota;
+  const usage = estimate?.usage;
+  const available =
+    quota !== undefined && usage !== undefined
+      ? Math.max(0, quota - usage)
+      : undefined;
+  return { quota, usage, available };
+};
+
+const storageFailureDetail = async () => {
+  const { quota, usage, available } = storageNumbers(
+    await storageEstimate(),
+  );
+  if (
+    quota === undefined ||
+    usage === undefined ||
+    available === undefined
+  ) {
+    return "";
+  }
+  return ` Browser storage reports ${(usage / 1e9).toFixed(2)} GB used, ${(quota / 1e9).toFixed(2)} GB quota, and ${(available / 1e9).toFixed(2)} GB available for ${self.location.origin}.`;
+};
+
+const assertFileStorageCapacity = async (asset: DownloadAsset) => {
+  const { available } = storageNumbers(await storageEstimate());
+  const required = asset.bytes + PER_FILE_STORAGE_HEADROOM_BYTES;
+  if (available !== undefined && available < required) {
+    throw new Error(
+      `Insufficient browser storage for ${asset.fileName}. This file needs ${(asset.bytes / 1e9).toFixed(2)} GB plus temporary-write headroom, but only ${(available / 1e9).toFixed(2)} GB is available. Remove cached model components or all model data, free disk space, and avoid Incognito mode. Browser storage is separate for every hostname, including each ngrok URL.`,
+    );
+  }
+};
+
 const opfsResponseBlob = async (asset: DownloadAsset) => {
   const directory = await opfsDirectory();
   try {
@@ -215,6 +261,7 @@ const opfsResponseBlob = async (asset: DownloadAsset) => {
     }
   }
 
+  await assertFileStorageCapacity(asset);
   const response = await fetchAsset(asset);
   if (!response.body) {
     throw new Error(
@@ -252,10 +299,12 @@ const opfsResponseBlob = async (asset: DownloadAsset) => {
     }
     await writable.close();
   } catch (error) {
+    await reader.cancel(error).catch(() => undefined);
     await writable.abort(error).catch(() => undefined);
     await directory.removeEntry(asset.fileName).catch(() => undefined);
+    const storageDetail = await storageFailureDetail();
     throw new Error(
-      `Persistent file write failed for ${asset.fileName} after ${(loaded / 1e9).toFixed(2)} GB. ${error instanceof Error ? error.message : String(error)}`,
+      `Persistent file write failed for ${asset.fileName} after ${(loaded / 1e9).toFixed(2)} GB. ${error instanceof Error ? error.message : String(error)}${storageDetail} Remove cached model components or all model data, free disk space, and avoid Incognito mode before retrying.`,
     );
   }
 
@@ -281,8 +330,17 @@ const cacheResponseBlob = async (asset: DownloadAsset) => {
   });
   let cachedResponse = await cache.match(request);
   if (cachedResponse) {
-    postDownload(asset, asset.bytes, asset.bytes, true);
-    return cachedResponse.blob();
+    const cachedBlob = await cachedResponse.blob();
+    if (cachedBlob.size === asset.bytes) {
+      postDownload(asset, asset.bytes, asset.bytes, true);
+      return cachedBlob;
+    }
+    await cache.delete(request);
+    post({
+      type: "diagnostic",
+      key: "partial cache entry removed",
+      value: `${asset.fileName}: ${cachedBlob.size} of ${asset.bytes} bytes`,
+    });
   }
 
   const response = await fetchAsset(asset);
@@ -364,6 +422,172 @@ const removeOpfsAssets = async (assets: DownloadAsset[]) => {
   }
 };
 
+const assetCacheRequest = (asset: DownloadAsset) =>
+  new Request(resolvedAssetUrl(asset), {
+    mode: "cors",
+    credentials: "omit",
+  });
+
+const inspectCachedAsset = async (
+  asset: DownloadAsset,
+  directory: FileSystemDirectoryHandle,
+  cache: Cache | null,
+): Promise<CachedAssetInfo> => {
+  let storedBytes = 0;
+  let storage: CachedAssetInfo["storage"] = null;
+
+  try {
+    const handle = await directory.getFileHandle(asset.fileName);
+    const file = await handle.getFile();
+    storedBytes = file.size;
+    storage = "opfs";
+    if (file.size === asset.bytes) {
+      return {
+        id: asset.id,
+        group: asset.group,
+        label: asset.label,
+        fileName: asset.fileName,
+        role: asset.role,
+        expectedBytes: asset.bytes,
+        storedBytes: file.size,
+        cached: true,
+        storage,
+      };
+    }
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "NotFoundError")) {
+      throw error;
+    }
+  }
+
+  const response = await cache?.match(assetCacheRequest(asset));
+  if (response) {
+    const cacheBytes = (await response.blob()).size;
+    if (cacheBytes >= storedBytes) {
+      storedBytes = cacheBytes;
+      storage = "cache-api";
+    }
+    if (cacheBytes === asset.bytes) {
+      return {
+        id: asset.id,
+        group: asset.group,
+        label: asset.label,
+        fileName: asset.fileName,
+        role: asset.role,
+        expectedBytes: asset.bytes,
+        storedBytes: cacheBytes,
+        cached: true,
+        storage: "cache-api",
+      };
+    }
+  }
+
+  return {
+    id: asset.id,
+    group: asset.group,
+    label: asset.label,
+    fileName: asset.fileName,
+    role: asset.role,
+    expectedBytes: asset.bytes,
+    storedBytes,
+    cached: false,
+    storage,
+  };
+};
+
+const cacheInventory = async (): Promise<CacheInventory> => {
+  const directory = await opfsDirectory();
+  const cache = "caches" in self ? await caches.open(CACHE_NAME) : null;
+  const assets: CachedAssetInfo[] = [];
+  for (const asset of ALL_ASSETS) {
+    assets.push(await inspectCachedAsset(asset, directory, cache));
+  }
+
+  const grouped = new Map<string, CachedAssetInfo[]>();
+  for (const asset of assets) {
+    const group = grouped.get(asset.group) ?? [];
+    group.push(asset);
+    grouped.set(asset.group, group);
+  }
+  const models = [...grouped.entries()].map(([id, groupAssets]) => {
+    const expectedBytes = groupAssets.reduce(
+      (sum, asset) => sum + asset.expectedBytes,
+      0,
+    );
+    const storedBytes = groupAssets.reduce(
+      (sum, asset) => sum + Math.min(asset.storedBytes, asset.expectedBytes),
+      0,
+    );
+    const complete = groupAssets.every((asset) => asset.cached);
+    return {
+      id,
+      label: groupAssets[0]?.label ?? id,
+      expectedBytes,
+      storedBytes,
+      complete,
+      partial: !complete && storedBytes > 0,
+      assets: groupAssets,
+    };
+  });
+  const expectedBytes = assets.reduce(
+    (sum, asset) => sum + asset.expectedBytes,
+    0,
+  );
+  const storedBytes = assets.reduce(
+    (sum, asset) => sum + Math.min(asset.storedBytes, asset.expectedBytes),
+    0,
+  );
+  const readyBytes = assets.reduce(
+    (sum, asset) => sum + (asset.cached ? asset.expectedBytes : 0),
+    0,
+  );
+  const estimate = await storageEstimate();
+  const { quota, usage, available } = storageNumbers(estimate);
+  let persisted: boolean | undefined;
+  try {
+    persisted = await (navigator as GpuNavigator).storage?.persisted?.();
+  } catch {
+    persisted = undefined;
+  }
+  return {
+    origin: self.location.origin,
+    cacheName: CACHE_NAME,
+    expectedBytes,
+    storedBytes,
+    readyBytes,
+    missingBytes: Math.max(0, expectedBytes - readyBytes),
+    usageBytes: usage,
+    quotaBytes: quota,
+    availableBytes: available,
+    persisted,
+    models,
+  };
+};
+
+const removeCachedAssets = async (assets: DownloadAsset[]) => {
+  const directory = await opfsDirectory();
+  const cache = "caches" in self ? await caches.open(CACHE_NAME) : null;
+  for (const asset of assets) {
+    await directory.removeEntry(asset.fileName).catch((error) => {
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) {
+        throw error;
+      }
+    });
+    await cache?.delete(assetCacheRequest(asset));
+  }
+};
+
+const removeCachedModel = async (modelId: string) => {
+  const assets = ALL_ASSETS.filter((asset) => asset.group === modelId);
+  if (assets.length === 0) {
+    throw new RangeError(`Unknown cached model component: ${modelId}`);
+  }
+  const before = await cacheInventory();
+  const beforeModel = before.models.find((model) => model.id === modelId);
+  await removeCachedAssets(assets);
+  return beforeModel?.storedBytes ?? 0;
+};
+
 const pruneSupersededWeights = async () => {
   const directory = await opfsDirectory();
   const obsoleteFiles = [
@@ -409,41 +633,6 @@ const clearPersistentAssets = async () => {
   });
 };
 
-const missingAssetBytes = async () => {
-  let cachedBytes = 0;
-  const directory = await opfsDirectory();
-  const cache = "caches" in self ? await caches.open(CACHE_NAME) : null;
-  for (const asset of ALL_ASSETS) {
-    try {
-      if (asset.role === "weights") {
-        const handle = await directory.getFileHandle(asset.fileName);
-        const file = await handle.getFile();
-        if (file.size === asset.bytes) {
-          cachedBytes += asset.bytes;
-        }
-        continue;
-      }
-      const response = await cache?.match(
-        new Request(resolvedAssetUrl(asset), {
-          mode: "cors",
-          credentials: "omit",
-        }),
-      );
-      if (response) {
-        const blob = await response.blob();
-        if (blob.size === asset.bytes) {
-          cachedBytes += asset.bytes;
-        }
-      }
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === "NotFoundError")) {
-        throw error;
-      }
-    }
-  }
-  return Math.max(0, TOTAL_DOWNLOAD_BYTES - cachedBytes);
-};
-
 const sessionFor = async (
   graphId: GraphId,
   allowWasmFallback: boolean,
@@ -477,10 +666,11 @@ const sessionFor = async (
     });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const [graphBlob, ...weightBlobs] = await Promise.all([
-          responseBlob(graph.graph),
-          ...graph.weights.map(responseBlob),
-        ]);
+        const graphBlob = await responseBlob(graph.graph);
+        const weightBlobs: Blob[] = [];
+        for (const asset of graph.weights) {
+          weightBlobs.push(await responseBlob(asset));
+        }
         // ORT Web materializes each Blob before mounting it in WASM.
         updateEstimatedPeak(graph.graph.bytes + weightBytes * 2);
         const graphBytes = await graphBlob.arrayBuffer();
@@ -690,40 +880,87 @@ const checkCompatibility = async (latentFrames: number) => {
     );
   }
 
+  let persisted: boolean | undefined;
   try {
-    await pruneSupersededWeights();
-    const estimate = await gpuNavigator.storage?.estimate();
-    if (estimate) {
-      const missingBytes = await missingAssetBytes();
-      post({
-        type: "diagnostic",
-        key: "storage quota",
-        value: estimate.quota ?? 0,
-      });
-      post({
-        type: "diagnostic",
-        key: "storage used",
-        value: estimate.usage ?? 0,
-      });
-      post({
-        type: "diagnostic",
-        key: "uncached model data",
-        value: missingBytes,
-      });
-      if (
-        estimate.quota &&
-        estimate.usage !== undefined &&
-        estimate.quota - estimate.usage < missingBytes
-      ) {
-        throw new Error(
-          `Insufficient browser storage quota. Need ${(missingBytes / 1e9).toFixed(2)} GB for uncached XL assets, but only ${((estimate.quota - estimate.usage) / 1e9).toFixed(2)} GB is available.`,
-        );
-      }
+    persisted = await gpuNavigator.storage?.persisted?.();
+    if (!persisted) {
+      persisted = await gpuNavigator.storage?.persist?.();
     }
-    await gpuNavigator.storage?.persist?.();
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Insufficient")) {
-      throw error;
+  } catch {
+    persisted = undefined;
+  }
+  post({
+    type: "diagnostic",
+    key: "persistent storage",
+    value:
+      persisted === undefined
+        ? "unsupported"
+        : persisted
+          ? "granted"
+          : "not granted",
+  });
+
+  await pruneSupersededWeights();
+  const estimate = await gpuNavigator.storage?.estimate();
+  if (estimate) {
+    const inventory = await cacheInventory();
+    const missingBytes = inventory.missingBytes;
+    const reclaimablePartialBytes = inventory.models.reduce(
+      (modelSum, model) =>
+        modelSum +
+        model.assets.reduce(
+          (assetSum, asset) =>
+            assetSum + (asset.cached ? 0 : asset.storedBytes),
+          0,
+        ),
+      0,
+    );
+    const { quota, usage, available } = storageNumbers(estimate);
+    const effectiveAvailable =
+      available === undefined
+        ? undefined
+        : available + reclaimablePartialBytes;
+    post({
+      type: "diagnostic",
+      key: "storage quota",
+      value: quota ?? 0,
+    });
+    post({
+      type: "diagnostic",
+      key: "storage used",
+      value: usage ?? 0,
+    });
+    post({
+      type: "diagnostic",
+      key: "uncached model data",
+      value: missingBytes,
+    });
+    const headroom =
+      missingBytes > 0
+        ? Math.max(
+            MIN_STORAGE_HEADROOM_BYTES,
+            Math.ceil(missingBytes * 0.05),
+          )
+        : 0;
+    post({
+      type: "diagnostic",
+      key: "storage write headroom",
+      value: headroom,
+    });
+    if (reclaimablePartialBytes > 0) {
+      post({
+        type: "diagnostic",
+        key: "partial model data reclaimable",
+        value: reclaimablePartialBytes,
+      });
+    }
+    if (
+      effectiveAvailable !== undefined &&
+      effectiveAvailable < missingBytes + headroom
+    ) {
+      throw new Error(
+        `Insufficient browser storage quota for ${self.location.origin}. The uncached XL assets need ${(missingBytes / 1e9).toFixed(2)} GB plus ${(headroom / 1e9).toFixed(2)} GB temporary-write headroom, but only ${(effectiveAvailable / 1e9).toFixed(2)} GB is available after reclaiming partial files. Use the demo cache manager or listCachedModels()/removeCachedModel()/clearCache(), free disk space, and avoid Incognito mode. Each hostname, including each ngrok URL, has separate browser storage.`,
+      );
     }
   }
 };
@@ -1171,13 +1408,34 @@ const runGeneration = async (
 };
 
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
-  if (event.data.type === "clear-cache") {
-    await clearPersistentAssets();
-    post({ type: "cache-cleared" });
-    return;
-  }
-
   try {
+    if (event.data.type === "clear-cache") {
+      await clearPersistentAssets();
+      post({ type: "cache-cleared" });
+      return;
+    }
+    if (event.data.type === "list-cache") {
+      runtimeAssets = event.data.assets ?? {};
+      post({
+        type: "cache-inventory",
+        inventory: await cacheInventory(),
+      });
+      return;
+    }
+    if (event.data.type === "remove-cached-model") {
+      runtimeAssets = event.data.assets ?? {};
+      const removedBytes = await removeCachedModel(event.data.modelId);
+      post({
+        type: "cached-model-removed",
+        modelId: event.data.modelId,
+        removedBytes,
+      });
+      post({
+        type: "cache-inventory",
+        inventory: await cacheInventory(),
+      });
+      return;
+    }
     await runGeneration(
       event.data.prompt,
       event.data.seed,
@@ -1192,7 +1450,9 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     };
     post({
       type: "error",
-      stage: [...stageStarted.keys()].at(-1) ?? "unknown",
+      stage:
+        [...stageStarted.keys()].at(-1) ??
+        (event.data.type === "start" ? "unknown" : "cache"),
       message: details.message ?? String(error),
       graph: details.graph,
       operatorHint: details.operatorHint,

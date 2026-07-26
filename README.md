@@ -127,12 +127,34 @@ Only one generation can run on an instance at a time.
 
 ```ts
 music.cancel();
+
+const cache = await music.listCachedModels();
+for (const model of cache.models) {
+  console.log(model.id, model.complete, model.storedBytes);
+}
+
+await music.removeCachedModel("dit");
 await music.clearCache();
 music.dispose();
 ```
 
-`clearCache()` removes this library's Cache Storage and OPFS entries. Removing
-the cache means the next generation downloads the complete model set again.
+`listCachedModels()` reports every graph/support component, its individual
+files, whether each file is complete, where it is stored (`opfs` or
+`cache-api`), and the origin's current usage/quota estimate.
+`removeCachedModel(id)` removes one component and returns a refreshed
+inventory. `clearCache()` removes all of this library's Cache Storage and OPFS
+entries. Removed files are downloaded again when the pipeline next needs them.
+
+Browser storage is scoped to the exact origin. `localhost:3001`, a production
+domain, and each new ngrok hostname all have separate caches. JavaScript running
+on one origin cannot enumerate or remove data belonging to another; remove old
+origins through Chromium's site-data settings.
+
+Before a cold download, the runtime requests persistent storage and verifies
+that the model plus temporary-write headroom fits the reported quota. Large
+external-data shards are downloaded sequentially. If the browser denies
+persistence or the quota is too small, free disk space, remove unneeded cached
+components, use a stable non-Incognito origin, and retry.
 
 `getRequiredAssets()` returns the resolved URL and byte size of every required
 file for deployment checks or self-hosting.

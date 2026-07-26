@@ -30,7 +30,22 @@ export type ClearCacheRequest = {
   type: "clear-cache";
 };
 
-export type WorkerRequest = StartRequest | ClearCacheRequest;
+export type ListCacheRequest = {
+  type: "list-cache";
+  assets?: WorkerAssetConfig;
+};
+
+export type RemoveCachedModelRequest = {
+  type: "remove-cached-model";
+  modelId: string;
+  assets?: WorkerAssetConfig;
+};
+
+export type WorkerRequest =
+  | StartRequest
+  | ClearCacheRequest
+  | ListCacheRequest
+  | RemoveCachedModelRequest;
 
 export type DownloadUpdate = {
   type: "download";
@@ -106,6 +121,53 @@ export type CacheClearedUpdate = {
   type: "cache-cleared";
 };
 
+export type CachedAssetInfo = {
+  id: string;
+  group: string;
+  label: string;
+  fileName: string;
+  role: "graph" | "weights" | "tokenizer" | "conditioning";
+  expectedBytes: number;
+  storedBytes: number;
+  cached: boolean;
+  storage: "cache-api" | "opfs" | null;
+};
+
+export type CachedModelInfo = {
+  id: string;
+  label: string;
+  expectedBytes: number;
+  storedBytes: number;
+  complete: boolean;
+  partial: boolean;
+  assets: CachedAssetInfo[];
+};
+
+export type CacheInventory = {
+  origin: string;
+  cacheName: string;
+  expectedBytes: number;
+  storedBytes: number;
+  readyBytes: number;
+  missingBytes: number;
+  usageBytes?: number;
+  quotaBytes?: number;
+  availableBytes?: number;
+  persisted?: boolean;
+  models: CachedModelInfo[];
+};
+
+export type CacheInventoryUpdate = {
+  type: "cache-inventory";
+  inventory: CacheInventory;
+};
+
+export type CachedModelRemovedUpdate = {
+  type: "cached-model-removed";
+  modelId: string;
+  removedBytes: number;
+};
+
 export type WorkerUpdate =
   | DownloadUpdate
   | StageUpdate
@@ -115,4 +177,6 @@ export type WorkerUpdate =
   | DiagnosticUpdate
   | CompleteUpdate
   | ErrorUpdate
-  | CacheClearedUpdate;
+  | CacheClearedUpdate
+  | CacheInventoryUpdate
+  | CachedModelRemovedUpdate;

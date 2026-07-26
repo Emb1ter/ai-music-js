@@ -179,6 +179,11 @@ button.secondary {
   color: #1b1b18;
 }
 
+button.danger {
+  border-color: #a43c22;
+  background: #a43c22;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
@@ -270,6 +275,111 @@ audio {
   white-space: pre-wrap;
 }
 
+.cache-manager {
+  margin-top: 48px;
+  border: 1px solid #1b1b18;
+  padding: clamp(26px, 4vw, 48px);
+  background: rgba(247, 246, 240, 0.82);
+}
+
+.cache-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.cache-heading .eyebrow {
+  margin-bottom: 14px;
+}
+
+.cache-heading h2 {
+  margin-bottom: 0;
+}
+
+.cache-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.cache-summary,
+.cache-note {
+  color: #61615a;
+  line-height: 1.55;
+}
+
+.cache-summary {
+  margin: 26px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.cache-list {
+  border-top: 1px solid #b7b5aa;
+}
+
+.cache-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: center;
+  border-bottom: 1px solid #b7b5aa;
+  padding: 20px 0;
+}
+
+.cache-row h3 {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 21px;
+  font-weight: 400;
+}
+
+.cache-status {
+  margin: 7px 0 0;
+  color: #77776f;
+  font-size: 12px;
+}
+
+.cache-status.complete {
+  color: #287044;
+}
+
+.cache-status.partial {
+  color: #a43c22;
+}
+
+.cache-row details {
+  margin-top: 10px;
+  color: #686861;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.cache-row summary {
+  cursor: pointer;
+}
+
+.cache-row ul {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
+.cache-row li {
+  margin: 5px 0;
+  overflow-wrap: anywhere;
+}
+
+.cache-remove {
+  min-height: 40px;
+  padding: 0 15px;
+  font-size: 12px;
+}
+
+.cache-note {
+  margin: 22px 0 0;
+  font-size: 11px;
+}
+
 footer {
   display: flex;
   justify-content: space-between;
@@ -297,6 +407,27 @@ footer {
 
   .controls {
     grid-template-columns: 1fr;
+  }
+
+  .cache-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .cache-actions {
+    width: 100%;
+  }
+
+  .cache-actions button {
+    flex: 1;
+  }
+
+  .cache-row {
+    grid-template-columns: 1fr;
+  }
+
+  .cache-remove {
+    justify-self: start;
   }
 
   footer {
