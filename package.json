@@ -1,0 +1,75 @@
+{
+  "name": "ai-music-js",
+  "version": "0.1.0",
+  "description": "Browser-only ACE-Step 1.5 XL Turbo music generation with ONNX Runtime Web and WebGPU.",
+  "license": "MIT",
+  "author": "Emb1ter",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Emb1ter/ai-music-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Emb1ter/ai-music-js/issues"
+  },
+  "homepage": "https://github.com/Emb1ter/ai-music-js#readme",
+  "keywords": [
+    "ace-step",
+    "ai-music",
+    "music-generation",
+    "onnx",
+    "onnxruntime-web",
+    "webgpu",
+    "browser",
+    "audio"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "types": "./dist/types/package-src/index.d.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "browser": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/types/package-src/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": "./dist/ace-step.worker.js",
+    "./model-assets.json": "./dist/model-assets.json",
+    "./wasm/*": "./dist/wasm/*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "npm run build:lib",
+    "build:lib": "node scripts/prepare-package-dist.mjs && esbuild package-src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/index.js --sourcemap && vite build --config vite.worker.config.ts && tsc -p tsconfig.lib.json && node scripts/copy-package-assets.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "demo": "vite --config examples/vite/vite.config.ts",
+    "demo:build": "vite build --config examples/vite/vite.config.ts",
+    "check": "npm run test && npm run typecheck && npm run build:lib && npm run demo:build && npm pack --dry-run --ignore-scripts",
+    "prepublishOnly": "npm run check"
+  },
+  "devDependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "@types/node": "22.19.19",
+    "esbuild": "^0.28.0",
+    "fflate": "^0.8.3",
+    "onnxruntime-web": "^1.27.0",
+    "typescript": "5.9.3",
+    "vite": "8.1.5",
+    "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "adm-zip": "0.6.0",
+    "sharp": "0.35.3"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ESNext", "WebWorker"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "paths": {
+      "@/*": ["./*"],
+      "ai-music-js": ["./package-src/index.ts"]
+    }
+  },
+  "include": [
+    "package-src/**/*.ts",
+    "lib/**/*.ts",
+    "workers/**/*.ts",
+    "tests/**/*.ts",
+    "examples/vite/src/**/*.ts",
+    "*.config.ts"
+  ],
+  "exclude": ["node_modules", "dist", "examples/vite/dist"]
+}

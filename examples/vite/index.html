@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A minimal ai-music-js browser generation demo."
+    />
+    <title>ai-music-js · browser demo</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="eyebrow"><span></span> WebGPU browser demo</div>
+        <h1>Turn a sentence into <em>sound.</em></h1>
+        <p class="lede">
+          ACE-Step 1.5 XL Turbo runs locally in a Worker. Your prompt and
+          generated audio stay in this browser.
+        </p>
+      </header>
+
+      <section class="workspace" aria-labelledby="composer-title">
+        <div class="composer">
+          <h2 id="composer-title">Compose</h2>
+          <label for="prompt">Music prompt</label>
+          <textarea id="prompt" rows="6"></textarea>
+
+          <div class="controls">
+            <label>
+              <span>Seed</span>
+              <input id="seed" type="number" min="0" max="4294967295" value="42" />
+            </label>
+            <label>
+              <span>Duration</span>
+              <select id="duration">
+                <option value="10">10 seconds</option>
+                <option value="20">20 seconds</option>
+                <option value="30">30 seconds</option>
+                <option value="60">60 seconds</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button id="generate" type="button">Generate music</button>
+            <button id="cancel" class="secondary" type="button" disabled>
+              Cancel
+            </button>
+          </div>
+
+          <p class="notice">
+            First use downloads about 5.25 GB. Start with 10 seconds.
+          </p>
+        </div>
+
+        <aside class="telemetry" aria-live="polite">
+          <div class="status-line">
+            <span class="pulse"></span>
+            <span id="stage">ready</span>
+          </div>
+          <p id="detail">Choose a prompt and generate your first clip.</p>
+          <progress id="progress" max="1" value="0"></progress>
+          <div id="progress-label" class="progress-label">Waiting</div>
+
+          <audio id="audio" controls></audio>
+          <a id="download" class="download" hidden>Download WAV</a>
+
+          <div class="log-label">Worker log</div>
+          <pre id="log"></pre>
+        </aside>
+      </section>
+
+      <footer>
+        <span>ai-music-js</span>
+        <span>48 kHz stereo · deterministic seed · local inference</span>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

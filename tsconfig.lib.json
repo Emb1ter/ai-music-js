@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "incremental": false,
+    "noEmit": false,
+    "outDir": "./dist/types",
+    "rootDir": "."
+  },
+  "include": [
+    "package-src/**/*.ts",
+    "lib/model-manifest.ts",
+    "lib/tensor-diagnostics.ts",
+    "lib/worker-protocol.ts"
+  ],
+  "exclude": ["node_modules"]
+}
