@@ -8,8 +8,15 @@ import {
   MODEL_PARAMETER_COUNT,
   PIPELINE_BUILD,
   TOTAL_DOWNLOAD_BYTES,
+  buildLyricPrompt,
   type DownloadAsset,
 } from "../lib/model-manifest";
+import {
+  resolveDcwOptions,
+  validateSamplerMode,
+  type DcwOptions,
+  type SamplerMode,
+} from "../lib/generation-options";
 import type {
   CacheInventory,
   CompleteUpdate,
@@ -23,6 +30,7 @@ export {
   DEFAULT_DURATION_SECONDS,
   DEFAULT_MODEL_BASE_URL,
   INFERENCE_STEPS,
+  MAX_LYRICS_CHARACTERS,
   MAX_DURATION_SECONDS,
   MIN_DURATION_SECONDS,
   MODEL_NAME,
@@ -30,8 +38,22 @@ export {
   PIPELINE_BUILD,
   SAMPLE_RATE,
   TOTAL_DOWNLOAD_BYTES,
+  buildLyricPrompt,
+  isInstrumentalLyrics,
 } from "../lib/model-manifest";
+export {
+  DCW_MODES,
+  DEFAULT_DCW_OPTIONS,
+  SAMPLER_MODES,
+} from "../lib/generation-options";
 export type {
+  DcwMode,
+  DcwOptions,
+  ResolvedDcwOptions,
+  SamplerMode,
+} from "../lib/generation-options";
+export type {
+  BatchProgressUpdate,
   CachedAssetInfo,
   CachedModelInfo,
   CacheClearedUpdate,
@@ -83,13 +105,27 @@ export type AceStepWebGpuOptions = {
 
 export type GenerateOptions = {
   prompt: string;
+  /** Omit or leave empty for instrumental generation. */
+  lyrics?: string;
+  /** BCP-47-like language code placed in ACE-Step's lyric prompt. */
+  vocalLanguage?: string;
   seed?: number;
   durationSeconds?: number;
+  sampler?: SamplerMode;
+  dcw?: DcwOptions;
   allowWasmFallback?: boolean;
   signal?: AbortSignal;
 };
 
+export type GenerateBatchOptions = Omit<GenerateOptions, "seed"> & {
+  /** One sequential generation per seed; accepted length is 1 through 8. */
+  seeds: readonly number[];
+};
+
 export type AceStepGenerationResult = {
+  seed: number;
+  sampler: SamplerMode;
+  instrumental: boolean;
   audioBuffer: AudioBuffer;
   wav: Blob;
   wavBytes: ArrayBuffer;
@@ -398,14 +434,31 @@ export class AceStepWebGpu {
 
   generate(options: GenerateOptions): Promise<AceStepGenerationResult> {
     const prompt = options.prompt.trim();
+    const lyrics = options.lyrics?.trim() ?? "";
+    const vocalLanguage = options.vocalLanguage?.trim() || "unknown";
     const seed = options.seed ?? 42;
     const durationSeconds =
       options.durationSeconds ?? DEFAULT_DURATION_SECONDS;
+    let sampler: SamplerMode;
+    let dcw;
+    try {
+      sampler = validateSamplerMode(options.sampler ?? "euler");
+      dcw = resolveDcwOptions(options.dcw);
+      buildLyricPrompt(lyrics, vocalLanguage);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     if (!prompt) {
       return Promise.reject(new TypeError("A non-empty music prompt is required."));
     }
-    if (!Number.isInteger(seed)) {
-      return Promise.reject(new TypeError("Seed must be an integer."));
+    if (
+      !Number.isInteger(seed) ||
+      seed < 0 ||
+      seed > 0xffff_ffff
+    ) {
+      return Promise.reject(
+        new TypeError("Seed must be an unsigned 32-bit integer."),
+      );
     }
     if (
       !Number.isInteger(durationSeconds) ||
@@ -424,8 +477,12 @@ export class AceStepWebGpu {
         {
           type: "start",
           prompt,
+          lyrics,
+          vocalLanguage,
           seed,
           durationSeconds,
+          sampler,
+          dcw,
           allowWasmFallback:
             options.allowWasmFallback ??
             this.defaultAllowWasmFallback,
@@ -443,6 +500,61 @@ export class AceStepWebGpu {
         options.signal,
       ),
     );
+  }
+
+  /**
+   * Runs independent generations one at a time. This intentionally does not
+   * create a larger GPU batch, so peak model memory remains equivalent to one
+   * generation.
+   */
+  async generateBatch(
+    options: GenerateBatchOptions,
+  ): Promise<AceStepGenerationResult[]> {
+    if (
+      !Array.isArray(options.seeds) ||
+      options.seeds.length < 1 ||
+      options.seeds.length > 8
+    ) {
+      throw new RangeError(
+        "Sequential batch seeds must contain from 1 through 8 values.",
+      );
+    }
+    if (
+      options.seeds.some(
+        (seed) =>
+          !Number.isInteger(seed) ||
+          seed < 0 ||
+          seed > 0xffff_ffff,
+      )
+    ) {
+      throw new TypeError(
+        "Every sequential batch seed must be an unsigned 32-bit integer.",
+      );
+    }
+    const { seeds, ...generationOptions } = options;
+    const results: AceStepGenerationResult[] = [];
+    for (const [index, seed] of seeds.entries()) {
+      this.notify({
+        type: "batch-progress",
+        index,
+        total: seeds.length,
+        seed,
+        status: "started",
+      });
+      const result = await this.generate({
+        ...generationOptions,
+        seed,
+      });
+      results.push(result);
+      this.notify({
+        type: "batch-progress",
+        index,
+        total: seeds.length,
+        seed,
+        status: "complete",
+      });
+    }
+    return results;
   }
 
   /**
@@ -534,6 +646,9 @@ const resultFromUpdate = (
   audioBuffer.copyToChannel(left, 0);
   audioBuffer.copyToChannel(right, 1);
   return {
+    seed: update.seed,
+    sampler: update.sampler,
+    instrumental: update.instrumental,
     audioBuffer,
     wav: new Blob([update.wav], { type: "audio/wav" }),
     wavBytes: update.wav,

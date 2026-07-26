@@ -8,8 +8,22 @@ import {
 import "./styles.css";
 
 const prompt = document.querySelector<HTMLTextAreaElement>("#prompt");
+const mode = document.querySelector<HTMLSelectElement>("#mode");
+const lyricsPanel = document.querySelector<HTMLElement>("#lyrics-panel");
+const lyrics = document.querySelector<HTMLTextAreaElement>("#lyrics");
+const vocalLanguage =
+  document.querySelector<HTMLSelectElement>("#vocal-language");
+const sampler = document.querySelector<HTMLSelectElement>("#sampler");
 const seed = document.querySelector<HTMLInputElement>("#seed");
 const duration = document.querySelector<HTMLSelectElement>("#duration");
+const batchSize = document.querySelector<HTMLSelectElement>("#batch-size");
+const dcwEnabled =
+  document.querySelector<HTMLInputElement>("#dcw-enabled");
+const dcwMode = document.querySelector<HTMLSelectElement>("#dcw-mode");
+const dcwScaler =
+  document.querySelector<HTMLInputElement>("#dcw-scaler");
+const dcwHighScaler =
+  document.querySelector<HTMLInputElement>("#dcw-high-scaler");
 const stage = document.querySelector<HTMLElement>("#stage");
 const detail = document.querySelector<HTMLElement>("#detail");
 const progress = document.querySelector<HTMLProgressElement>("#progress");
@@ -18,6 +32,7 @@ const audio = document.querySelector<HTMLAudioElement>("#audio");
 const generate = document.querySelector<HTMLButtonElement>("#generate");
 const cancel = document.querySelector<HTMLButtonElement>("#cancel");
 const download = document.querySelector<HTMLAnchorElement>("#download");
+const batchResults = document.querySelector<HTMLElement>("#batch-results");
 const log = document.querySelector<HTMLPreElement>("#log");
 const refreshCache =
   document.querySelector<HTMLButtonElement>("#refresh-cache");
@@ -27,8 +42,18 @@ const cacheList = document.querySelector<HTMLElement>("#cache-list");
 
 if (
   !prompt ||
+  !mode ||
+  !lyricsPanel ||
+  !lyrics ||
+  !vocalLanguage ||
+  !sampler ||
   !seed ||
   !duration ||
+  !batchSize ||
+  !dcwEnabled ||
+  !dcwMode ||
+  !dcwScaler ||
+  !dcwHighScaler ||
   !stage ||
   !detail ||
   !progress ||
@@ -37,6 +62,7 @@ if (
   !generate ||
   !cancel ||
   !download ||
+  !batchResults ||
   !log ||
   !refreshCache ||
   !clearCache ||
@@ -48,7 +74,7 @@ if (
 
 prompt.value = DEFAULT_INSTRUMENTAL_PROMPT;
 
-let audioUrl: string | null = null;
+let audioUrls: string[] = [];
 let appBusy = false;
 let generating = false;
 const downloads = new Map<string, { loaded: number; total: number }>();
@@ -68,11 +94,47 @@ const appendLog = (message: string) => {
   log.scrollTop = log.scrollHeight;
 };
 
+const clearAudioResults = () => {
+  for (const url of audioUrls) {
+    URL.revokeObjectURL(url);
+  }
+  audioUrls = [];
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.hidden = true;
+  download.hidden = true;
+  batchResults.replaceChildren();
+};
+
+const updateModeControls = () => {
+  const vocalsEnabled = mode.value === "vocals";
+  lyricsPanel.hidden = !vocalsEnabled;
+  lyrics.disabled = !vocalsEnabled || appBusy;
+  vocalLanguage.disabled = !vocalsEnabled || appBusy;
+};
+
+const updateDcwControls = () => {
+  const enabled = dcwEnabled.checked && !appBusy;
+  dcwMode.disabled = !enabled;
+  dcwScaler.disabled = !enabled;
+  dcwHighScaler.disabled =
+    !enabled || dcwMode.value !== "double";
+};
+
 const updateControlState = () => {
   generate.disabled = appBusy;
   cancel.disabled = !generating;
   refreshCache.disabled = appBusy;
   clearCache.disabled = appBusy;
+  prompt.disabled = appBusy;
+  mode.disabled = appBusy;
+  sampler.disabled = appBusy;
+  seed.disabled = appBusy;
+  duration.disabled = appBusy;
+  batchSize.disabled = appBusy;
+  dcwEnabled.disabled = appBusy;
+  updateModeControls();
+  updateDcwControls();
   for (const button of cacheList.querySelectorAll<HTMLButtonElement>(
     "[data-model-id]",
   )) {
@@ -172,6 +234,19 @@ const report = (update: WorkerUpdate) => {
     return;
   }
 
+  if (update.type === "batch-progress") {
+    const number = update.index + 1;
+    stage.textContent = `batch ${number} of ${update.total}`;
+    detail.textContent =
+      update.status === "started"
+        ? `Generating seed ${update.seed}.`
+        : `Seed ${update.seed} completed.`;
+    appendLog(
+      `batch ${number}/${update.total}: seed ${update.seed} ${update.status}`,
+    );
+    return;
+  }
+
   if (update.type === "compatibility") {
     appendLog(update.message);
     return;
@@ -198,6 +273,12 @@ const runtime = new AceStepWebGpu({
   onUpdate: report,
 });
 
+mode.addEventListener("change", updateModeControls);
+dcwEnabled.addEventListener("change", updateDcwControls);
+dcwMode.addEventListener("change", updateDcwControls);
+updateModeControls();
+updateDcwControls();
+
 const inspectCache = async () => {
   appBusy = true;
   updateControlState();
@@ -220,12 +301,17 @@ generate.addEventListener("click", async () => {
     prompt.focus();
     return;
   }
+  const lyricsValue = mode.value === "vocals" ? lyrics.value.trim() : "";
+  if (mode.value === "vocals" && !lyricsValue) {
+    lyrics.focus();
+    detail.textContent = "Add lyrics before starting vocal generation.";
+    return;
+  }
 
   appBusy = true;
   generating = true;
   updateControlState();
-  download.hidden = true;
-  audio.removeAttribute("src");
+  clearAudioResults();
   downloads.clear();
   progress.removeAttribute("value");
   progressLabel.textContent = "Preparing runtime";
@@ -233,25 +319,87 @@ generate.addEventListener("click", async () => {
   detail.textContent = "Checking WebGPU and browser storage.";
 
   try {
-    const result = await runtime.generate({
+    const baseSeed = Number(seed.value);
+    const count = Number(batchSize.value);
+    const seeds = Array.from(
+      { length: count },
+      (_, index) => (baseSeed + index) >>> 0,
+    );
+    const generationOptions = {
       prompt: promptValue,
-      seed: Number(seed.value),
+      lyrics: lyricsValue,
+      vocalLanguage: vocalLanguage.value,
       durationSeconds: Number(duration.value),
-    });
+      sampler: sampler.value as "euler" | "heun" | "euler-sde",
+      dcw: {
+        enabled: dcwEnabled.checked,
+        mode: dcwMode.value as "low" | "high" | "double" | "pix",
+        scaler: Number(dcwScaler.value),
+        highScaler: Number(dcwHighScaler.value),
+      },
+    };
+    const results =
+      count === 1
+        ? [
+            await runtime.generate({
+              ...generationOptions,
+              seed: baseSeed,
+            }),
+          ]
+        : await runtime.generateBatch({
+            ...generationOptions,
+            seeds,
+          });
 
-    if (audioUrl) URL.revokeObjectURL(audioUrl);
-    audioUrl = URL.createObjectURL(result.wav);
-    audio.src = audioUrl;
-    download.href = audioUrl;
-    download.download = `ai-music-${seed.value}-${duration.value}s.wav`;
-    download.hidden = false;
+    if (results.length === 1) {
+      const [result] = results;
+      const audioUrl = URL.createObjectURL(result.wav);
+      audioUrls.push(audioUrl);
+      audio.src = audioUrl;
+      audio.hidden = false;
+      download.href = audioUrl;
+      download.download =
+        `ai-music-${result.seed}-${result.durationSeconds}s-${result.sampler}.wav`;
+      download.hidden = false;
+    } else {
+      const cards = results.map((result, index) => {
+        const audioUrl = URL.createObjectURL(result.wav);
+        audioUrls.push(audioUrl);
+        const card = document.createElement("article");
+        card.className = "batch-result";
+        const heading = document.createElement("h3");
+        heading.textContent = `Result ${index + 1} · seed ${result.seed}`;
+        const metadata = document.createElement("p");
+        metadata.textContent =
+          `${result.durationSeconds}s · ${result.sampler} · ${
+            result.instrumental ? "instrumental" : "vocals"
+          }`;
+        const player = document.createElement("audio");
+        player.controls = true;
+        player.src = audioUrl;
+        const save = document.createElement("a");
+        save.className = "download";
+        save.href = audioUrl;
+        save.download =
+          `ai-music-${result.seed}-${result.durationSeconds}s-${result.sampler}.wav`;
+        save.textContent = "Download WAV";
+        card.append(heading, metadata, player, save);
+        return card;
+      });
+      batchResults.replaceChildren(...cards);
+    }
+    const totalPeak = Math.max(
+      ...results.map((result) => result.estimatedPeakBytes),
+    );
     progress.max = 1;
     progress.value = 1;
     progressLabel.textContent = "Complete";
     stage.textContent = "music ready";
     detail.textContent =
-      `${result.durationSeconds}s stereo WAV · estimated peak ${formatBytes(result.estimatedPeakBytes)}`;
-    appendLog("Generation completed. Listen to the entire result.");
+      `${results.length} × ${results[0]!.durationSeconds}s stereo WAV · ${results[0]!.sampler} · estimated peak ${formatBytes(totalPeak)}`;
+    appendLog(
+      `${results.length} generation${results.length === 1 ? "" : "s"} completed.`,
+    );
   } catch (error) {
     stage.textContent = "generation stopped";
     detail.textContent =

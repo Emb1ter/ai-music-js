@@ -1,4 +1,8 @@
 import type { TensorSummary } from "./tensor-diagnostics";
+import type {
+  ResolvedDcwOptions,
+  SamplerMode,
+} from "./generation-options";
 
 export type WorkerAssetConfig = {
   /**
@@ -20,8 +24,12 @@ export type WorkerAssetConfig = {
 export type StartRequest = {
   type: "start";
   prompt: string;
+  lyrics: string;
+  vocalLanguage: string;
   seed: number;
   durationSeconds: number;
+  sampler: SamplerMode;
+  dcw: ResolvedDcwOptions;
   allowWasmFallback: boolean;
   assets?: WorkerAssetConfig;
 };
@@ -97,6 +105,9 @@ export type DiagnosticUpdate = {
 
 export type CompleteUpdate = {
   type: "complete";
+  seed: number;
+  sampler: SamplerMode;
+  instrumental: boolean;
   wav: ArrayBuffer;
   left: ArrayBuffer;
   right: ArrayBuffer;
@@ -106,6 +117,14 @@ export type CompleteUpdate = {
   trace: TensorSummary[];
   timings: Record<string, number>;
   estimatedPeakBytes: number;
+};
+
+export type BatchProgressUpdate = {
+  type: "batch-progress";
+  index: number;
+  total: number;
+  seed: number;
+  status: "started" | "complete";
 };
 
 export type ErrorUpdate = {
@@ -176,6 +195,7 @@ export type WorkerUpdate =
   | TraceUpdate
   | DiagnosticUpdate
   | CompleteUpdate
+  | BatchProgressUpdate
   | ErrorUpdate
   | CacheClearedUpdate
   | CacheInventoryUpdate

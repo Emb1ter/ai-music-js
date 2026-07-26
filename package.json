@@ -1,6 +1,6 @@
 {
   "name": "ai-music-js",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Browser-only ACE-Step 1.5 XL Turbo music generation with ONNX Runtime Web and WebGPU.",
   "license": "MIT",
   "author": "Emb1ter",

@@ -11,6 +11,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   min-width: 320px;
   min-height: 100vh;
@@ -152,6 +156,79 @@ a:focus-visible {
   margin-top: 22px;
 }
 
+.feature-panel {
+  margin-top: 24px;
+  border: 1px solid #b7b5aa;
+  padding: 18px;
+  background: rgba(231, 229, 220, 0.46);
+}
+
+.feature-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.feature-heading label {
+  margin-bottom: 5px;
+}
+
+.feature-heading p,
+.batch-result p {
+  margin: 0;
+  color: #6a6a63;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.language-field {
+  width: min(170px, 42%);
+  flex: 0 0 auto;
+}
+
+.language-field select {
+  height: 40px;
+}
+
+#lyrics {
+  min-height: 190px;
+  margin-top: 16px;
+}
+
+.dcw-panel {
+  padding-bottom: 20px;
+}
+
+.check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.check-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: #5967ff;
+}
+
+.check-label span {
+  margin: 0;
+}
+
+.controls.compact {
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.controls.compact input,
+.controls.compact select {
+  height: 40px;
+}
+
 .actions {
   display: flex;
   gap: 12px;
@@ -249,6 +326,35 @@ progress::-webkit-progress-value {
 audio {
   width: 100%;
   margin-top: 30px;
+}
+
+.batch-results {
+  display: grid;
+  gap: 14px;
+  margin-top: 26px;
+}
+
+.batch-result {
+  border-top: 1px solid #b7b5aa;
+  padding-top: 16px;
+}
+
+.batch-result h3 {
+  margin: 0 0 5px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 20px;
+  font-weight: 400;
+}
+
+.batch-result audio {
+  margin-top: 12px;
+}
+
+.batch-result .download {
+  min-height: 38px;
+  margin-top: 8px;
+  padding: 0 14px;
+  font-size: 11px;
 }
 
 .download {
@@ -407,6 +513,18 @@ footer {
 
   .controls {
     grid-template-columns: 1fr;
+  }
+
+  .controls.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-heading {
+    flex-direction: column;
+  }
+
+  .language-field {
+    width: 100%;
   }
 
   .cache-heading {

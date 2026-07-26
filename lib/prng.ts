@@ -51,3 +51,28 @@ export function deterministicNormal(
   }
   return values;
 }
+
+/** Derives a stable independent PRNG stream without consuming the base stream. */
+export function deriveStreamSeed(seed: number, stream: number) {
+  if (!Number.isInteger(seed) || !Number.isInteger(stream) || stream < 0) {
+    throw new RangeError("Seed and stream index must be valid integers.");
+  }
+  let mixed =
+    (seed >>> 0) ^
+    0x9e3779b9 ^
+    Math.imul((stream + 1) >>> 0, 0x85ebca6b);
+  mixed ^= mixed >>> 16;
+  mixed = Math.imul(mixed, 0x7feb352d);
+  mixed ^= mixed >>> 15;
+  mixed = Math.imul(mixed, 0x846ca68b);
+  mixed ^= mixed >>> 16;
+  return (mixed >>> 0) || FALLBACK_SEED;
+}
+
+export function deterministicNormalStream(
+  length: number,
+  seed: number,
+  stream: number,
+) {
+  return deterministicNormal(length, deriveStreamSeed(seed, stream));
+}

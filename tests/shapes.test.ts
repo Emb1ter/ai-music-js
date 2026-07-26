@@ -10,6 +10,7 @@ import {
   TOTAL_DOWNLOAD_BYTES,
   VAE_UPSAMPLE_FACTOR,
   buildCaptionPrompt,
+  buildLyricPrompt,
   durationToAudioFrames,
   durationToLatentFrames,
   validateDurationSeconds,
@@ -78,6 +79,15 @@ describe("variable-duration tensor contracts", () => {
   it("packs the selected duration into the text caption", () => {
     expect(buildCaptionPrompt("ambient instrumental", 60)).toContain(
       "duration: 60 seconds",
+    );
+  });
+
+  it("formats user lyrics exactly as ACE-Step expects", () => {
+    expect(buildLyricPrompt("[Verse]\nHello world", "en")).toBe(
+      "# Languages\nen\n\n# Lyric\n[Verse]\nHello world<|endoftext|>",
+    );
+    expect(buildLyricPrompt()).toContain(
+      "# Lyric\n[Instrumental]<|endoftext|>",
     );
   });
 });

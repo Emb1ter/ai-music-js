@@ -1,6 +1,6 @@
 # ai-music-js
 
-Generate instrumental music entirely inside a desktop browser with
+Generate instrumental or vocal music entirely inside a desktop browser with
 **ACE-Step 1.5 XL Turbo**, ONNX Runtime Web, and WebGPU. Model loading,
 tokenization, inference, VAE decoding, and WAV creation run in a Web Worker.
 No generation server or API key is required.
@@ -50,6 +50,7 @@ const result = await music.generate({
   prompt: DEFAULT_INSTRUMENTAL_PROMPT,
   seed: 42,
   durationSeconds: 10,
+  sampler: "euler",
 });
 
 const url = URL.createObjectURL(result.wav);
@@ -60,6 +61,30 @@ await audio.play();
 // result.wav: audio/wav Blob
 // result.timings: stage timings in milliseconds
 // result.trace: intermediate tensor summaries
+```
+
+For vocals, supply the lyrics yourself. This no-planning-LM build does not
+write lyrics:
+
+```ts
+const vocal = await music.generate({
+  prompt: "Bright electropop, expressive female lead, huge melodic chorus",
+  lyrics: `[Verse]
+We follow every streetlight
+
+[Chorus]
+Sing it into daylight`,
+  vocalLanguage: "en",
+  seed: 1234,
+  durationSeconds: 30,
+  sampler: "heun",
+  dcw: {
+    enabled: true,
+    mode: "double",
+    scaler: 0.05,
+    highScaler: 0.02,
+  },
+});
 ```
 
 The XL-specific model files download by default from the pinned
@@ -77,9 +102,10 @@ npm install
 npm run demo
 ```
 
-Open the displayed `localhost` URL in desktop Chrome or Edge. Enter a prompt,
-seed, and duration, then choose **Generate music**. The page displays download
-and inference progress and provides audio playback plus a WAV download.
+Open the displayed `localhost` URL in desktop Chrome or Edge. The demo exposes
+instrumental/vocal mode, lyrics, language, seed, duration, sampler, DCW, and
+one-to-four sequential results. It displays download and inference progress
+and provides audio playback plus WAV downloads.
 
 To test a production build:
 
@@ -117,11 +143,53 @@ const result = await music.generate({
 ```
 
 - `prompt` is required.
+- `lyrics` enables vocal generation. Omit it or pass `[Instrumental]` for an
+  instrumental result.
+- `vocalLanguage` is `unknown` or a language code such as `en`, `es`, or
+  `zh-Hans`. It defaults to `unknown`.
 - `seed` is a deterministic unsigned 32-bit seed and defaults to `42`.
 - `durationSeconds` must be a whole number from 10 through 120.
+- `sampler` is `euler` (default), `heun`, or `euler-sde`.
+- `dcw` configures optional sampler-side correction. Browser DCW currently
+  implements the official one-level Haar behavior for `low`, `high`, `double`,
+  and `pix` modes. It is disabled by default to preserve results from versions
+  before 0.3.
 - `signal` can cancel an active generation.
 
 Only one generation can run on an instance at a time.
+
+### `generateBatch(options)`
+
+```ts
+const alternatives = await music.generateBatch({
+  prompt: "Dreamy shoegaze with a soaring chorus",
+  lyrics: "[Chorus]\nStay inside this sound",
+  vocalLanguage: "en",
+  seeds: [100, 101, 102],
+  durationSeconds: 20,
+  sampler: "euler-sde",
+});
+```
+
+`generateBatch()` accepts one through eight seeds and generates each result
+sequentially. It deliberately does not create a larger GPU tensor batch, so
+peak inference memory stays close to one generation. `batch-progress` updates
+report the current seed. Each result gets its own deterministic initial latent;
+Euler SDE also derives stable, independent secondary-noise streams from that
+seed.
+
+### Samplers and DCW
+
+| Setting | DiT evaluations | Behavior |
+|---|---:|---|
+| `euler` | 8 | Original XL Turbo browser path |
+| `heun` | 15 | Predictor/corrector ODE sampling; roughly doubles DiT time |
+| `euler-sde` | 8 | Predicts clean audio and re-noises at each non-final step |
+
+Heun and Euler SDE are separate modes. DCW can be combined with any sampler
+and is applied after every step using the raw velocity at the current
+timestep. `double` uses `t × scaler` for the Haar low band and
+`(1 − t) × highScaler` for the high band.
 
 ### Lifecycle and cache
 
@@ -162,10 +230,12 @@ file for deployment checks or self-hosting.
 ## Current pipeline
 
 - ACE-Step 1.5 XL Turbo, 4.169B-parameter DiT
-- Instrumental text-to-music
-- Deterministic initial noise
+- Instrumental text-to-music or vocals from user-supplied lyrics
+- Deterministic initial and Euler-SDE secondary noise
 - No planning LM, reference audio, or CFG pass
-- Eight shift-3 Euler flow-matching evaluations
+- Eight-step shift-3 Euler, Heun, or Euler-SDE flow matching
+- Optional one-level Haar DCW
+- Sequential multi-seed generation
 - 10–120-second dynamic duration
 - 48 kHz stereo `AudioBuffer` and PCM16 WAV output
 - Heavy XL condition and DiT inference on WebGPU
@@ -195,11 +265,26 @@ RSS with `std::bad_alloc`; the six-chunk decode completed at approximately
 3.01 GB peak RSS. A 20-second full decode and its two-chunk equivalent were
 bit-identical, including the join.
 
+The Heun, Euler-SDE, and DCW scheduler equations are implemented from the
+official ACE-Step source at commit
+[`6d467e4b5081ccb0abf1ec1bf4fdf9051a2d34b0`](https://github.com/ace-step/ACE-Step-1.5/commit/6d467e4b5081ccb0abf1ec1bf4fdf9051a2d34b0).
+Automated float32 snapshot tests cover the shifted schedule, Heun trapezoidal
+update, SDE clean-prediction/re-noising calculation, deterministic secondary
+streams, and native Haar DCW including odd-length padding.
+
+The numerical table above describes the eight-step Euler instrumental path.
+Vocal quality and final-audio parity for Heun, Euler SDE, and DCW still require
+listening tests on the target browser/GPU before a release should claim
+reference-level quality. Euler SDE is mathematically aligned with Python, but
+its deterministic XorShift32 noise sequence intentionally differs from
+PyTorch's RNG sequence.
+
 ## Unsupported
 
-Vocals, planning LM, reference audio, cover/repaint/lego/extract, audio-code
-hints, CFG, base/SFT checkpoints, DCW, Heun/SDE samplers, durations beyond 120
-seconds, tiled long-form generation, batching, LoRA, mobile, Safari, and
+Automatic lyric writing/planning LM, reference audio,
+cover/repaint/lego/extract, audio-code hints, CFG, base/SFT checkpoints,
+non-Haar DCW wavelets, combined Heun+SDE, durations beyond 120 seconds, tiled
+long-form generation, true GPU tensor batching, LoRA, mobile, Safari, and
 Firefox.
 
 ## Development

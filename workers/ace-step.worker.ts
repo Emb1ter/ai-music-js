@@ -8,7 +8,6 @@ import {
   CACHE_NAME,
   DIT_ATTENTION_HEADS,
   INFERENCE_STEPS,
-  INSTRUMENTAL_LYRIC_PROMPT,
   LATENT_CHANNELS,
   LATENT_FRAME_RATE,
   MAX_DURATION_SECONDS,
@@ -23,14 +22,30 @@ import {
   TURBO_SHIFT,
   VAE_UPSAMPLE_FACTOR,
   buildCaptionPrompt,
+  buildLyricPrompt,
   durationToAudioFrames,
   durationToLatentFrames,
   graphById,
+  isInstrumentalLyrics,
   type DownloadAsset,
   type GraphId,
 } from "@/lib/model-manifest";
-import { deterministicNormal } from "@/lib/prng";
-import { createTurboSchedule, eulerFlowStep } from "@/lib/scheduler";
+import { applyDcw } from "@/lib/dcw";
+import {
+  deterministicNormal,
+  deterministicNormalStream,
+} from "@/lib/prng";
+import {
+  createTurboSchedule,
+  eulerFlowStep,
+  eulerSdeFlowStep,
+  heunFlowStep,
+  predictCleanSample,
+} from "@/lib/scheduler";
+import type {
+  ResolvedDcwOptions,
+  SamplerMode,
+} from "@/lib/generation-options";
 import {
   assertShape,
   tensorSummary,
@@ -969,8 +984,12 @@ const checkCompatibility = async (latentFrames: number) => {
 
 const runGeneration = async (
   prompt: string,
+  lyrics: string,
+  vocalLanguage: string,
   seed: number,
   durationSeconds: number,
+  sampler: SamplerMode,
+  dcw: ResolvedDcwOptions,
   allowWasmFallback: boolean,
   assets: WorkerAssetConfig = {},
 ) => {
@@ -985,6 +1004,7 @@ const runGeneration = async (
   }
   const latentFrames = durationToLatentFrames(durationSeconds);
   const audioFrames = durationToAudioFrames(durationSeconds);
+  const instrumental = isInstrumentalLyrics(lyrics);
   trace.length = 0;
   runtimeAssets = assets;
   Object.keys(timings).forEach((key) => delete timings[key]);
@@ -1037,6 +1057,25 @@ const runGeneration = async (
     key: "latent frames",
     value: latentFrames,
   });
+  post({
+    type: "diagnostic",
+    key: "generation mode",
+    value: instrumental
+      ? "instrumental"
+      : `vocals (${vocalLanguage})`,
+  });
+  post({
+    type: "diagnostic",
+    key: "sampler",
+    value: sampler,
+  });
+  post({
+    type: "diagnostic",
+    key: "DCW",
+    value: dcw.enabled
+      ? `${dcw.mode} · ${dcw.scaler}/${dcw.highScaler}`
+      : "disabled",
+  });
 
   startStage("tokenization", "Loading tokenizer and building ACE-Step prompts");
   const [tokenizer, silence] = await Promise.all([
@@ -1048,7 +1087,11 @@ const runGeneration = async (
     buildCaptionPrompt(prompt, durationSeconds),
     256,
   );
-  const lyricTokens = tokenize(tokenizer, INSTRUMENTAL_LYRIC_PROMPT, 2048);
+  const lyricTokens = tokenize(
+    tokenizer,
+    buildLyricPrompt(lyrics, vocalLanguage),
+    2048,
+  );
   endStage("tokenization");
   post({
     type: "diagnostic",
@@ -1079,7 +1122,12 @@ const runGeneration = async (
   await textSession.release();
   endStage("text-encoding");
 
-  startStage("lyric-embedding", "Embedding the instrumental lyric marker");
+  startStage(
+    "lyric-embedding",
+    instrumental
+      ? "Embedding the instrumental lyric marker"
+      : "Embedding user-supplied lyrics",
+  );
   const embeddingSession = await sessionFor(
     "lyric-embedding",
     allowWasmFallback,
@@ -1102,7 +1150,9 @@ const runGeneration = async (
 
   startStage(
     "condition-packing",
-    "Projecting and packing caption, instrumental lyric, timbre, and source context",
+    `Projecting and packing caption, ${
+      instrumental ? "instrumental marker" : "lyrics"
+    }, timbre, and source context`,
   );
   const conditionSession = await sessionFor(
     "condition-encoder",
@@ -1208,57 +1258,135 @@ const runGeneration = async (
 
   startStage(
     "flow-matching",
-    "Running eight ACE-Step XL Turbo Euler evaluations",
+    `Running ACE-Step XL Turbo ${sampler} sampling (${
+      sampler === "heun"
+        ? INFERENCE_STEPS * 2 - 1
+        : INFERENCE_STEPS
+    } DiT evaluations)`,
   );
   const ditSession = await sessionFor("dit", allowWasmFallback);
   const schedule = createTurboSchedule(INFERENCE_STEPS, TURBO_SHIFT);
+
+  const evaluateVelocity = async (
+    inputLatent: Float32Array,
+    timestep: number,
+    tensorName: string,
+  ) => {
+    const hiddenStatesTensor = new ort.Tensor(
+      "float32",
+      inputLatent,
+      [1, latentFrames, LATENT_CHANNELS],
+    );
+    const timestepTensor = new ort.Tensor(
+      "float32",
+      new Float32Array([timestep]),
+      [1],
+    );
+    const encoderHiddenTensor = new ort.Tensor(
+      "float32",
+      encoderHidden,
+      encoderDims,
+    );
+    const contextLatentsTensor = new ort.Tensor(
+      "float32",
+      contextLatents,
+      contextDims,
+    );
+    try {
+      const outputs = await ditSession.run({
+        hidden_states: hiddenStatesTensor,
+        timestep: timestepTensor,
+        encoder_hidden_states: encoderHiddenTensor,
+        context_latents: contextLatentsTensor,
+      });
+      const velocityTensor = outputs.velocity as NumericTensor;
+      try {
+        const velocity = asFloat32(velocityTensor, "DiT velocity");
+        assertShape(
+          velocityTensor.dims,
+          [1, latentFrames, LATENT_CHANNELS],
+          tensorName,
+        );
+        recordTensor(tensorName, velocityTensor.dims, velocity);
+        return velocity;
+      } finally {
+        velocityTensor.dispose();
+      }
+    } finally {
+      hiddenStatesTensor.dispose();
+      timestepTensor.dispose();
+      encoderHiddenTensor.dispose();
+      contextLatentsTensor.dispose();
+    }
+  };
+
   for (const step of schedule) {
-    const stepStage = `euler:${step.index + 1}`;
+    const stepStage = `${sampler}:${step.index + 1}`;
     startStage(
       stepStage,
       `DiT ${step.index + 1}/${schedule.length} · t=${step.current.toFixed(6)} → ${step.next.toFixed(6)}`,
     );
-    const outputs = await ditSession.run({
-      hidden_states: new ort.Tensor(
-        "float32",
-        latent,
-        [1, latentFrames, LATENT_CHANNELS],
-      ),
-      timestep: new ort.Tensor(
-        "float32",
-        new Float32Array([step.current]),
-        [1],
-      ),
-      encoder_hidden_states: new ort.Tensor(
-        "float32",
-        encoderHidden,
-        encoderDims,
-      ),
-      context_latents: new ort.Tensor(
-        "float32",
-        contextLatents,
-        contextDims,
-      ),
-    });
-    const velocityTensor = outputs.velocity as NumericTensor;
-    const velocity = asFloat32(velocityTensor, "DiT velocity");
-    assertShape(
-      velocityTensor.dims,
-      [1, latentFrames, LATENT_CHANNELS],
-      `velocity step ${step.index + 1}`,
-    );
-    recordTensor(
+    const latentBefore = latent;
+    const velocity = await evaluateVelocity(
+      latentBefore,
+      step.current,
       `velocity_${step.index + 1}`,
-      velocityTensor.dims,
-      velocity,
     );
-    latent = eulerFlowStep(latent, velocity, step.delta);
+    const denoised = dcw.enabled
+      ? predictCleanSample(latentBefore, velocity, step.current)
+      : undefined;
+
+    if (sampler === "heun" && step.next > 0) {
+      const predictor = eulerFlowStep(
+        latentBefore,
+        velocity,
+        step.delta,
+      );
+      const correctorVelocity = await evaluateVelocity(
+        predictor,
+        step.next,
+        `corrector_velocity_${step.index + 1}`,
+      );
+      latent = heunFlowStep(
+        latentBefore,
+        velocity,
+        correctorVelocity,
+        step.delta,
+      );
+    } else if (sampler === "euler-sde") {
+      const secondaryNoise =
+        step.next > 0
+          ? deterministicNormalStream(
+              latentBefore.length,
+              seed,
+              step.index + 1,
+            )
+          : new Float32Array(latentBefore.length);
+      latent = eulerSdeFlowStep(
+        latentBefore,
+        velocity,
+        secondaryNoise,
+        step.current,
+        step.next,
+      );
+    } else {
+      latent = eulerFlowStep(latentBefore, velocity, step.delta);
+    }
+    if (denoised) {
+      latent = applyDcw(
+        latent,
+        denoised,
+        latentFrames,
+        LATENT_CHANNELS,
+        step.current,
+        dcw,
+      );
+    }
     recordTensor(
       `latent_${step.index + 1}`,
       [1, latentFrames, LATENT_CHANNELS],
       latent,
     );
-    velocityTensor.dispose();
     endStage(stepStage);
   }
   await ditSession.release();
@@ -1465,6 +1593,9 @@ const runGeneration = async (
   post(
     {
       type: "complete",
+      seed,
+      sampler,
+      instrumental,
       wav,
       left: left.buffer,
       right: right.buffer,
@@ -1510,8 +1641,12 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     }
     await runGeneration(
       event.data.prompt,
+      event.data.lyrics,
+      event.data.vocalLanguage,
       event.data.seed,
       event.data.durationSeconds,
+      event.data.sampler,
+      event.data.dcw,
       event.data.allowWasmFallback,
       event.data.assets,
     );

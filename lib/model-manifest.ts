@@ -277,8 +277,39 @@ ${caption.trim()}
 <|endoftext|>
 `;
 
-export const INSTRUMENTAL_LYRIC_PROMPT = `# Languages
-unknown
+export const MAX_LYRICS_CHARACTERS = 4_096;
+
+export const isInstrumentalLyrics = (lyrics?: string) => {
+  const normalized = lyrics?.trim();
+  return (
+    !normalized ||
+    normalized.toLowerCase() === "[instrumental]"
+  );
+};
+
+export const buildLyricPrompt = (
+  lyrics?: string,
+  vocalLanguage = "unknown",
+) => {
+  const normalizedLyrics = lyrics?.trim() || "[Instrumental]";
+  if (normalizedLyrics.length > MAX_LYRICS_CHARACTERS) {
+    throw new RangeError(
+      `Lyrics must contain at most ${MAX_LYRICS_CHARACTERS} characters.`,
+    );
+  }
+  const normalizedLanguage = vocalLanguage.trim() || "unknown";
+  if (!/^(?:unknown|[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?)$/i.test(
+    normalizedLanguage,
+  )) {
+    throw new RangeError(
+      "Vocal language must be 'unknown' or a language code such as en, es, or zh-Hans.",
+    );
+  }
+  return `# Languages
+${normalizedLanguage}
 
 # Lyric
-[Instrumental]<|endoftext|>`;
+${normalizedLyrics}<|endoftext|>`;
+};
+
+export const INSTRUMENTAL_LYRIC_PROMPT = buildLyricPrompt();

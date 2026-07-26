@@ -61,3 +61,105 @@ export function eulerFlowStep(
   }
   return output;
 }
+
+export function predictCleanSample(
+  latent: Float32Array,
+  velocity: Float32Array,
+  timestep: number,
+  output = new Float32Array(latent.length),
+) {
+  if (latent.length !== velocity.length || output.length !== latent.length) {
+    throw new RangeError(
+      "Clean-prediction tensors must have identical flattened shapes.",
+    );
+  }
+  if (!Number.isFinite(timestep) || timestep < 0 || timestep > 1) {
+    throw new RangeError("Timestep must be finite and between zero and one.");
+  }
+  const timestep32 = Math.fround(timestep);
+  for (let index = 0; index < latent.length; index += 1) {
+    output[index] = Math.fround(
+      Math.fround(latent[index]) -
+        Math.fround(Math.fround(velocity[index]) * timestep32),
+    );
+  }
+  return output;
+}
+
+export function heunFlowStep(
+  latent: Float32Array,
+  velocity: Float32Array,
+  correctorVelocity: Float32Array,
+  delta: number,
+  output = new Float32Array(latent.length),
+) {
+  if (
+    latent.length !== velocity.length ||
+    latent.length !== correctorVelocity.length ||
+    output.length !== latent.length
+  ) {
+    throw new RangeError("Heun tensors must have identical flattened shapes.");
+  }
+  if (!Number.isFinite(delta) || delta < 0) {
+    throw new RangeError("Heun delta must be finite and non-negative.");
+  }
+  const delta32 = Math.fround(delta);
+  for (let index = 0; index < latent.length; index += 1) {
+    const averageVelocity = Math.fround(
+      Math.fround(
+        Math.fround(velocity[index]) +
+          Math.fround(correctorVelocity[index]),
+      ) * Math.fround(0.5),
+    );
+    output[index] = Math.fround(
+      Math.fround(latent[index]) -
+        Math.fround(averageVelocity * delta32),
+    );
+  }
+  return output;
+}
+
+/**
+ * Official ACE-Step Euler SDE update: reconstruct x0 at t_current, then
+ * re-noise it with an independent normal tensor at t_next.
+ */
+export function eulerSdeFlowStep(
+  latent: Float32Array,
+  velocity: Float32Array,
+  noise: Float32Array,
+  currentTimestep: number,
+  nextTimestep: number,
+  output = new Float32Array(latent.length),
+) {
+  if (
+    latent.length !== velocity.length ||
+    latent.length !== noise.length ||
+    output.length !== latent.length
+  ) {
+    throw new RangeError(
+      "Euler SDE tensors must have identical flattened shapes.",
+    );
+  }
+  if (
+    !Number.isFinite(currentTimestep) ||
+    !Number.isFinite(nextTimestep) ||
+    currentTimestep < 0 ||
+    currentTimestep > 1 ||
+    nextTimestep < 0 ||
+    nextTimestep > currentTimestep
+  ) {
+    throw new RangeError(
+      "Euler SDE timesteps must be finite, descending, and between zero and one.",
+    );
+  }
+  const clean = predictCleanSample(latent, velocity, currentTimestep);
+  const next32 = Math.fround(nextTimestep);
+  const cleanScale = Math.fround(1 - next32);
+  for (let index = 0; index < latent.length; index += 1) {
+    output[index] = Math.fround(
+      Math.fround(next32 * Math.fround(noise[index])) +
+        Math.fround(cleanScale * Math.fround(clean[index])),
+    );
+  }
+  return output;
+}

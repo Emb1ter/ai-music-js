@@ -102,6 +102,9 @@ class FakeWorker {
       const right = new Float32Array([-0.1, -0.2, -0.3, -0.4]);
       const complete: CompleteUpdate = {
         type: "complete",
+        seed: request.seed,
+        sampler: request.sampler,
+        instrumental: !request.lyrics,
         wav: new Uint8Array([82, 73, 70, 70]).buffer,
         left: left.buffer,
         right: right.buffer,
@@ -193,19 +196,129 @@ describe("published browser API", () => {
     );
     expect(result.wav.type).toBe("audio/wav");
     expect(result.durationSeconds).toBe(10);
+    expect(result.seed).toBe(7);
+    expect(result.sampler).toBe("euler");
+    expect(result.instrumental).toBe(true);
     expect(result.timings).toEqual({ dit: 123 });
     expect(updates.at(-1)?.type).toBe("complete");
     expect(fakeWorker.terminated).toBe(true);
     expect(fakeWorker.requests[0]).toMatchObject({
       type: "start",
       prompt: "cinematic instrumental",
+      lyrics: "",
+      vocalLanguage: "unknown",
       seed: 7,
       durationSeconds: 10,
+      sampler: "euler",
+      dcw: {
+        enabled: false,
+        mode: "double",
+        scaler: 0.05,
+        highScaler: 0.02,
+      },
       assets: {
         modelBaseUrl: "https://cdn.example/ace-xl/",
       },
     });
     runtime.dispose();
+  });
+
+  it("passes lyrics, language, Heun and DCW settings to inference", async () => {
+    vi.stubGlobal("AudioBuffer", FakeAudioBuffer);
+    const fakeWorker = new FakeWorker();
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => fakeWorker as unknown as Worker,
+    });
+
+    const result = await runtime.generate({
+      prompt: "upbeat electropop with a bright female lead vocal",
+      lyrics: "[Verse]\nWe light the dark\n\n[Chorus]\nSing it again",
+      vocalLanguage: "en",
+      seed: 99,
+      durationSeconds: 30,
+      sampler: "heun",
+      dcw: {
+        enabled: true,
+        mode: "double",
+        scaler: 0.04,
+        highScaler: 0.015,
+      },
+    });
+
+    expect(result.instrumental).toBe(false);
+    expect(result.sampler).toBe("heun");
+    expect(fakeWorker.requests[0]).toMatchObject({
+      type: "start",
+      lyrics: "[Verse]\nWe light the dark\n\n[Chorus]\nSing it again",
+      vocalLanguage: "en",
+      sampler: "heun",
+      dcw: {
+        enabled: true,
+        mode: "double",
+        scaler: 0.04,
+        highScaler: 0.015,
+      },
+    });
+  });
+
+  it("generates a seed batch sequentially and reports progress", async () => {
+    vi.stubGlobal("AudioBuffer", FakeAudioBuffer);
+    const workers: FakeWorker[] = [];
+    const updates: WorkerUpdate[] = [];
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+      onUpdate: (update) => updates.push(update),
+    });
+
+    const results = await runtime.generateBatch({
+      prompt: "ambient piano",
+      seeds: [10, 11, 12],
+      durationSeconds: 10,
+      sampler: "euler-sde",
+    });
+
+    expect(results.map((result) => result.seed)).toEqual([10, 11, 12]);
+    expect(workers).toHaveLength(3);
+    expect(
+      workers.map((worker) => {
+        const request = worker.requests[0];
+        return request?.type === "start" ? request.seed : undefined;
+      }),
+    ).toEqual([10, 11, 12]);
+    expect(
+      updates
+        .filter((update) => update.type === "batch-progress")
+        .map((update) => `${update.status}:${update.seed}`),
+    ).toEqual([
+      "started:10",
+      "complete:10",
+      "started:11",
+      "complete:11",
+      "started:12",
+      "complete:12",
+    ]);
+  });
+
+  it("validates every batch seed before starting any generation", async () => {
+    const workers: FakeWorker[] = [];
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+    });
+    await expect(
+      runtime.generateBatch({
+        prompt: "ambient piano",
+        seeds: [1, -1],
+      }),
+    ).rejects.toThrow(/Every sequential batch seed/);
+    expect(workers).toHaveLength(0);
   });
 
   it("clears the persistent cache through an isolated Worker operation", async () => {

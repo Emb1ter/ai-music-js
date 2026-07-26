@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { deterministicNormal } from "../lib/prng";
+import {
+  deriveStreamSeed,
+  deterministicNormal,
+  deterministicNormalStream,
+} from "../lib/prng";
 
 describe("deterministic browser latent RNG", () => {
   it("repeats exactly for the same seed", () => {
@@ -16,5 +20,15 @@ describe("deterministic browser latent RNG", () => {
     const values = deterministicNormal(4, 0);
     expect(Array.from(values)).toEqual(Array.from(deterministicNormal(4, 0)));
     expect(values.some((value) => value !== 0)).toBe(true);
+  });
+
+  it("provides stable independent secondary streams for Euler SDE", () => {
+    expect(deterministicNormalStream(32, 42, 1)).toEqual(
+      deterministicNormalStream(32, 42, 1),
+    );
+    expect(deterministicNormalStream(32, 42, 1)).not.toEqual(
+      deterministicNormalStream(32, 42, 2),
+    );
+    expect(deriveStreamSeed(42, 1)).not.toBe(deriveStreamSeed(42, 2));
   });
 });
