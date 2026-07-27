@@ -2,6 +2,7 @@ import {
   AceStepWebGpu,
   AceStepWebGpuError,
   DEFAULT_INSTRUMENTAL_PROMPT,
+  DEFAULT_VOCAL_PROMPT,
   type CacheInventory,
   type WorkerUpdate,
 } from "ai-music-js";
@@ -14,6 +15,8 @@ const lyrics = document.querySelector<HTMLTextAreaElement>("#lyrics");
 const vocalLanguage =
   document.querySelector<HTMLSelectElement>("#vocal-language");
 const sampler = document.querySelector<HTMLSelectElement>("#sampler");
+const samplerGuidance =
+  document.querySelector<HTMLElement>("#sampler-guidance");
 const seed = document.querySelector<HTMLInputElement>("#seed");
 const duration = document.querySelector<HTMLSelectElement>("#duration");
 const batchSize = document.querySelector<HTMLSelectElement>("#batch-size");
@@ -47,6 +50,7 @@ if (
   !lyrics ||
   !vocalLanguage ||
   !sampler ||
+  !samplerGuidance ||
   !seed ||
   !duration ||
   !batchSize ||
@@ -111,6 +115,44 @@ const updateModeControls = () => {
   lyricsPanel.hidden = !vocalsEnabled;
   lyrics.disabled = !vocalsEnabled || appBusy;
   vocalLanguage.disabled = !vocalsEnabled || appBusy;
+  const sdeOption = sampler.querySelector<HTMLOptionElement>(
+    'option[value="euler-sde"]',
+  );
+  if (sdeOption) {
+    sdeOption.disabled = vocalsEnabled;
+  }
+};
+
+const updateSamplerGuidance = () => {
+  samplerGuidance.textContent =
+    sampler.value === "heun"
+      ? "Vocal-compatible predictor/corrector; about 15 DiT evaluations."
+      : sampler.value === "euler-sde"
+        ? "Experimental and currently restricted to instrumental output."
+        : "Recommended and verified for instrumental and vocal output.";
+};
+
+const applyModeDefaults = () => {
+  const vocalsEnabled = mode.value === "vocals";
+  const currentPrompt = prompt.value.trim();
+  if (
+    vocalsEnabled &&
+    currentPrompt === DEFAULT_INSTRUMENTAL_PROMPT
+  ) {
+    prompt.value = DEFAULT_VOCAL_PROMPT;
+  } else if (
+    !vocalsEnabled &&
+    currentPrompt === DEFAULT_VOCAL_PROMPT
+  ) {
+    prompt.value = DEFAULT_INSTRUMENTAL_PROMPT;
+  }
+  if (vocalsEnabled && sampler.value === "euler-sde") {
+    sampler.value = "euler";
+    detail.textContent =
+      "Vocal mode uses Euler by default; Euler SDE failed the vocal quality gate.";
+  }
+  updateModeControls();
+  updateSamplerGuidance();
 };
 
 const updateDcwControls = () => {
@@ -273,10 +315,12 @@ const runtime = new AceStepWebGpu({
   onUpdate: report,
 });
 
-mode.addEventListener("change", updateModeControls);
+mode.addEventListener("change", applyModeDefaults);
+sampler.addEventListener("change", updateSamplerGuidance);
 dcwEnabled.addEventListener("change", updateDcwControls);
 dcwMode.addEventListener("change", updateDcwControls);
 updateModeControls();
+updateSamplerGuidance();
 updateDcwControls();
 
 const inspectCache = async () => {

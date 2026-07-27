@@ -13,6 +13,7 @@ import {
   buildLyricPrompt,
   durationToAudioFrames,
   durationToLatentFrames,
+  hasVocalPromptConflict,
   validateDurationSeconds,
 } from "../lib/model-manifest";
 import { assertShape } from "../lib/tensor-diagnostics";
@@ -89,6 +90,28 @@ describe("variable-duration tensor contracts", () => {
     expect(buildLyricPrompt()).toContain(
       "# Lyric\n[Instrumental]<|endoftext|>",
     );
+  });
+
+  it("detects captions that contradict supplied vocal lyrics", () => {
+    const lyrics = "[Verse]\nSing this line";
+    expect(
+      hasVocalPromptConflict(
+        "Warm analog synthwave instrumental, polished mix",
+        lyrics,
+      ),
+    ).toBe(true);
+    expect(
+      hasVocalPromptConflict(
+        "Mostly instrumental synthwave with a clear lead vocal",
+        lyrics,
+      ),
+    ).toBe(false);
+    expect(
+      hasVocalPromptConflict(
+        "Warm analog synthwave instrumental",
+        "[Instrumental]",
+      ),
+    ).toBe(false);
   });
 });
 

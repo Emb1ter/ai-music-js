@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AceStepWebGpu,
   DEFAULT_MODEL_BASE_URL,
+  DEFAULT_VOCAL_PROMPT,
   LOCAL_MODEL_FILES,
   TOTAL_DOWNLOAD_BYTES,
   getRequiredAssets,
@@ -259,6 +260,36 @@ describe("published browser API", () => {
         highScaler: 0.015,
       },
     });
+  });
+
+  it("rejects contradictory instrumental captions before downloading models", async () => {
+    const fakeWorker = new FakeWorker();
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => fakeWorker as unknown as Worker,
+    });
+    await expect(
+      runtime.generate({
+        prompt: "Warm synthwave instrumental with no singing",
+        lyrics: "[Verse]\nPlease sing this line",
+        vocalLanguage: "en",
+      }),
+    ).rejects.toThrow(/requests an instrumental track/);
+    expect(fakeWorker.requests).toEqual([]);
+  });
+
+  it("keeps Euler SDE instrumental-only until vocal quality passes", async () => {
+    const fakeWorker = new FakeWorker();
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => fakeWorker as unknown as Worker,
+    });
+    await expect(
+      runtime.generate({
+        prompt: DEFAULT_VOCAL_PROMPT,
+        lyrics: "[Chorus]\nPlease sing this line",
+        sampler: "euler-sde",
+      }),
+    ).rejects.toThrow(/limited to instrumental generation/);
+    expect(fakeWorker.requests).toEqual([]);
   });
 
   it("generates a seed batch sequentially and reports progress", async () => {

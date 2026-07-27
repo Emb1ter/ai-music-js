@@ -26,6 +26,7 @@ import {
   durationToAudioFrames,
   durationToLatentFrames,
   graphById,
+  hasVocalPromptConflict,
   isInstrumentalLyrics,
   type DownloadAsset,
   type GraphId,
@@ -1005,6 +1006,16 @@ const runGeneration = async (
   const latentFrames = durationToLatentFrames(durationSeconds);
   const audioFrames = durationToAudioFrames(durationSeconds);
   const instrumental = isInstrumentalLyrics(lyrics);
+  if (hasVocalPromptConflict(prompt, lyrics)) {
+    throw new Error(
+      "Vocal lyrics were supplied, but the caption requests an instrumental track without asking for a singer or vocals.",
+    );
+  }
+  if (!instrumental && sampler === "euler-sde") {
+    throw new Error(
+      "Euler SDE is currently limited to instrumental generation because the XL INT4 vocal quality gate fails. Use Euler or Heun for vocals.",
+    );
+  }
   trace.length = 0;
   runtimeAssets = assets;
   Object.keys(timings).forEach((key) => delete timings[key]);

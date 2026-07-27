@@ -9,6 +9,8 @@ import {
   PIPELINE_BUILD,
   TOTAL_DOWNLOAD_BYTES,
   buildLyricPrompt,
+  hasVocalPromptConflict,
+  isInstrumentalLyrics,
   type DownloadAsset,
 } from "../lib/model-manifest";
 import {
@@ -39,6 +41,7 @@ export {
   SAMPLE_RATE,
   TOTAL_DOWNLOAD_BYTES,
   buildLyricPrompt,
+  hasVocalPromptConflict,
   isInstrumentalLyrics,
 } from "../lib/model-manifest";
 export {
@@ -75,6 +78,9 @@ export type { TensorSummary } from "../lib/tensor-diagnostics";
 
 export const DEFAULT_INSTRUMENTAL_PROMPT =
   "Warm analog synthwave instrumental, steady electronic drums, pulsing bass, cinematic pads, memorable lead melody, polished studio mix";
+
+export const DEFAULT_VOCAL_PROMPT =
+  "Warm analog synthwave song, steady electronic drums, pulsing bass, cinematic pads, memorable chorus, clear expressive lead vocal singing every supplied lyric, polished studio mix";
 
 export type UrlValue = string | URL;
 
@@ -450,6 +456,21 @@ export class AceStepWebGpu {
     }
     if (!prompt) {
       return Promise.reject(new TypeError("A non-empty music prompt is required."));
+    }
+    const instrumental = isInstrumentalLyrics(lyrics);
+    if (hasVocalPromptConflict(prompt, lyrics)) {
+      return Promise.reject(
+        new TypeError(
+          "Vocal lyrics were supplied, but the music prompt requests an instrumental track without asking for a singer or vocals.",
+        ),
+      );
+    }
+    if (!instrumental && sampler === "euler-sde") {
+      return Promise.reject(
+        new RangeError(
+          "Euler SDE is currently limited to instrumental generation because the XL INT4 vocal quality gate fails. Use Euler or Heun for vocals.",
+        ),
+      );
     }
     if (
       !Number.isInteger(seed) ||

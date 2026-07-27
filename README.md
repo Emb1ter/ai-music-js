@@ -64,7 +64,9 @@ await audio.play();
 ```
 
 For vocals, supply the lyrics yourself. This no-planning-LM build does not
-write lyrics:
+write lyrics. The caption must also request a singer or vocals; a caption that
+only asks for an instrumental track contradicts the lyric conditioning and is
+rejected before model loading:
 
 ```ts
 const vocal = await music.generate({
@@ -150,6 +152,7 @@ const result = await music.generate({
 - `seed` is a deterministic unsigned 32-bit seed and defaults to `42`.
 - `durationSeconds` must be a whole number from 10 through 120.
 - `sampler` is `euler` (default), `heun`, or `euler-sde`.
+  `euler-sde` is currently restricted to instrumental generation.
 - `dcw` configures optional sampler-side correction. Browser DCW currently
   implements the official one-level Haar behavior for `low`, `high`, `double`,
   and `pix` modes. It is disabled by default to preserve results from versions
@@ -162,9 +165,7 @@ Only one generation can run on an instance at a time.
 
 ```ts
 const alternatives = await music.generateBatch({
-  prompt: "Dreamy shoegaze with a soaring chorus",
-  lyrics: "[Chorus]\nStay inside this sound",
-  vocalLanguage: "en",
+  prompt: "Dreamy instrumental shoegaze with evolving guitars and drums",
   seeds: [100, 101, 102],
   durationSeconds: 20,
   sampler: "euler-sde",
@@ -184,12 +185,13 @@ seed.
 |---|---:|---|
 | `euler` | 8 | Original XL Turbo browser path |
 | `heun` | 15 | Predictor/corrector ODE sampling; roughly doubles DiT time |
-| `euler-sde` | 8 | Predicts clean audio and re-noises at each non-final step |
+| `euler-sde` | 8 | Experimental instrumental-only mode; re-noises after each non-final step |
 
 Heun and Euler SDE are separate modes. DCW can be combined with any sampler
 and is applied after every step using the raw velocity at the current
 timestep. `double` uses `t × scaler` for the Haar low band and
-`(1 − t) × highScaler` for the high band.
+`(1 − t) × highScaler` for the high band. For vocals, use Euler first; Heun is
+available when the additional generation time is acceptable.
 
 ### Lifecycle and cache
 
@@ -273,19 +275,30 @@ update, SDE clean-prediction/re-noising calculation, deterministic secondary
 streams, and native Haar DCW including odd-length padding.
 
 The numerical table above describes the eight-step Euler instrumental path.
-Vocal quality and final-audio parity for Heun, Euler SDE, and DCW still require
-listening tests on the target browser/GPU before a release should claim
-reference-level quality. Euler SDE is mathematically aligned with Python, but
-its deterministic XorShift32 noise sequence intentionally differs from
-PyTorch's RNG sequence.
+The vocal Euler path was also compared using explicitly vocal captions and
+supplied English lyrics:
+
+| Duration | Condition cosine | Final latent cosine | Waveform cosine |
+|---:|---:|---:|---:|
+| 10 seconds | 0.995112 | 0.846388 | 0.495369 |
+| 30 seconds | 0.995092 | 0.786107 | 0.506491 |
+
+The dynamic lyric conditioning is present and a small ASR probe recovered
+supplied lyric content from both Euler outputs, but the INT4 audio is not
+numerically close enough to claim Python parity. Euler SDE lost vocal lyric
+intelligibility in the same probe and is therefore rejected for vocal
+requests. Heun and vocal DCW still require broader listening tests on target
+browser/GPU combinations. Euler SDE remains mathematically aligned with
+Python for instrumental use, but its deterministic XorShift32 noise sequence
+intentionally differs from PyTorch's RNG sequence.
 
 ## Unsupported
 
 Automatic lyric writing/planning LM, reference audio,
 cover/repaint/lego/extract, audio-code hints, CFG, base/SFT checkpoints,
 non-Haar DCW wavelets, combined Heun+SDE, durations beyond 120 seconds, tiled
-long-form generation, true GPU tensor batching, LoRA, mobile, Safari, and
-Firefox.
+long-form generation, Euler-SDE vocals, true GPU tensor batching, LoRA,
+mobile, Safari, and Firefox.
 
 ## Development
 

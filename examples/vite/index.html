@@ -39,8 +39,13 @@
               <select id="sampler">
                 <option value="euler">Euler · 8 evaluations</option>
                 <option value="heun">Heun · 15 evaluations</option>
-                <option value="euler-sde">Euler SDE · deterministic</option>
+                <option value="euler-sde">
+                  Euler SDE · experimental instrumentals
+                </option>
               </select>
+              <small id="sampler-guidance">
+                Recommended and verified for instrumental and vocal output.
+              </small>
             </label>
             <label>
               <span>Seed</span>
@@ -152,9 +157,9 @@
           </div>
 
           <p class="notice">
-            First use downloads about 5.25 GB. Heun takes almost twice as
-            long; batch results run one after another to keep peak GPU memory
-            bounded.
+            First use downloads about 5.25 GB. Vocal captions must explicitly
+            request singing; Euler SDE is restricted to instrumentals because
+            it failed the vocal quality gate.
           </p>
         </div>
 

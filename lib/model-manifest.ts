@@ -287,6 +287,29 @@ export const isInstrumentalLyrics = (lyrics?: string) => {
   );
 };
 
+export const hasVocalPromptConflict = (
+  caption: string,
+  lyrics?: string,
+) => {
+  if (isInstrumentalLyrics(lyrics)) {
+    return false;
+  }
+  const normalizedCaption = caption.trim().toLowerCase();
+  const withoutNegativeVoicePhrases = normalizedCaption.replace(
+    /\b(?:no|without)\s+(?:vocals?|singing|singers?|voices?)\b/g,
+    "",
+  );
+  const requestsInstrumental =
+    /\b(?:instrumental|no vocals?|without vocals?|no singing)\b/.test(
+      normalizedCaption,
+    );
+  const requestsVoice =
+    /\b(?:vocals?|vocalist|singers?|singing|sung|voices?|choir|rapping|rapper|spoken word)\b/.test(
+      withoutNegativeVoicePhrases,
+    );
+  return requestsInstrumental && !requestsVoice;
+};
+
 export const buildLyricPrompt = (
   lyrics?: string,
   vocalLanguage = "unknown",
