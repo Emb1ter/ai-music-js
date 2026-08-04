@@ -1,15 +1,25 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AceStepWebGpu,
+  DEFAULT_GENERATION_DOWNLOAD_BYTES,
+  DEFAULT_HIGH_QUALITY_PLANNER_MODEL,
+  DEFAULT_HIGH_QUALITY_PLANNER_MODEL_REVISION,
+  DEFAULT_LYRICS_MODEL,
+  DEFAULT_LYRICS_MODEL_REVISION,
   DEFAULT_MODEL_BASE_URL,
   DEFAULT_VOCAL_PROMPT,
+  HIGH_PRECISION_GENERATION_DOWNLOAD_BYTES,
+  HIGH_PRECISION_MODEL_FILES,
   LOCAL_MODEL_FILES,
+  PIPELINE_BUILD,
+  FULL_MODEL_DOWNLOAD_BYTES,
   TOTAL_DOWNLOAD_BYTES,
   getRequiredAssets,
 } from "../package-src/index";
 import type {
   CacheInventory,
   CompleteUpdate,
+  LanguageWorkerRequest,
   WorkerRequest,
   WorkerUpdate,
 } from "../lib/worker-protocol";
@@ -62,12 +72,57 @@ class FakeAudioBuffer {
 class FakeWorker {
   onmessage: ((event: MessageEvent<WorkerUpdate>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
-  readonly requests: WorkerRequest[] = [];
+  readonly requests: Array<WorkerRequest | LanguageWorkerRequest> = [];
   terminated = false;
 
-  postMessage(request: WorkerRequest) {
+  postMessage(request: WorkerRequest | LanguageWorkerRequest) {
     this.requests.push(request);
     queueMicrotask(() => {
+      if (request.type === "write-lyrics") {
+        this.emit({
+          type: "lyrics-complete",
+          lyrics:
+            "[Verse]\nNeon wakes the street\nWe move with the beat\n\n[Chorus]\nSing into the light\nKeep the fire bright",
+          model: request.modelId,
+          revision: request.revision,
+          seed: request.seed,
+          durationSeconds: request.durationSeconds,
+          maxWords: request.maxWords,
+          attempts: 1,
+          timings: { "lyrics-generation": 123 },
+        });
+        return;
+      }
+      if (request.type === "plan-music") {
+        const plannedDurationSeconds = request.autoDuration
+          ? request.recommendedDurationSeconds
+          : request.durationSeconds;
+        this.emit({
+          type: "plan-complete",
+          plannerQuality: request.plannerQuality,
+          semanticCodeIds: Array.from(
+            { length: plannedDurationSeconds * 5 },
+            (_, index) => index % 64_000,
+          ),
+          metadata: {
+            bpm: 120,
+            caption: request.prompt,
+            durationSeconds: plannedDurationSeconds,
+            durationSource: request.autoDuration
+              ? "recommended"
+              : "requested",
+            keyScale: "C major",
+            language: request.vocalLanguage,
+            timeSignature: 4,
+          },
+          reasoning: "<think>\nbpm: 120\n</think>",
+          model: request.modelId,
+          revision: request.revision,
+          seed: request.seed,
+          timings: { "planner-semantic-codes": 321 },
+        });
+        return;
+      }
       if (request.type === "clear-cache") {
         this.emit({ type: "cache-cleared" });
         return;
@@ -104,6 +159,7 @@ class FakeWorker {
       const complete: CompleteUpdate = {
         type: "complete",
         seed: request.seed,
+        audioQuality: request.audioQuality,
         sampler: request.sampler,
         instrumental: !request.lyrics,
         wav: new Uint8Array([82, 73, 70, 70]).buffer,
@@ -134,13 +190,28 @@ afterEach(() => {
 });
 
 describe("published browser API", () => {
+  it("reports audio, default-generation, and full cache sizes separately", () => {
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    expect(runtime.audioDownloadBytes).toBe(TOTAL_DOWNLOAD_BYTES);
+    expect(runtime.highPrecisionAudioDownloadBytes).toBe(
+      HIGH_PRECISION_GENERATION_DOWNLOAD_BYTES,
+    );
+    expect(runtime.totalDownloadBytes).toBe(
+      DEFAULT_GENERATION_DOWNLOAD_BYTES,
+    );
+    expect(runtime.totalBrowserModelBytes).toBe(FULL_MODEL_DOWNLOAD_BYTES);
+    runtime.dispose();
+  });
+
   it("uses the pinned Hugging Face XL export by default", () => {
     const assets = getRequiredAssets({
       origin: "https://app.example/",
     });
     for (const model of LOCAL_MODEL_FILES) {
       expect(assets.find((asset) => asset.id === model.id)?.url).toBe(
-        `${DEFAULT_MODEL_BASE_URL}${model.fileName}?build=2026-07-25-xl-turbo-q4-chunked`,
+        `${DEFAULT_MODEL_BASE_URL}${model.fileName}?build=${PIPELINE_BUILD}`,
       );
     }
   });
@@ -155,12 +226,33 @@ describe("published browser API", () => {
     );
     for (const local of LOCAL_MODEL_FILES) {
       expect(assets.find((asset) => asset.id === local.id)?.url).toBe(
-        `https://cdn.example/ace-xl/${local.fileName}?build=2026-07-25-xl-turbo-q4-chunked`,
+        `https://cdn.example/ace-xl/${local.fileName}?build=${PIPELINE_BUILD}`,
       );
     }
     expect(
       assets.find((asset) => asset.id === "text-encoder:graph")?.url,
     ).toMatch(/^https:\/\/huggingface\.co\//);
+  });
+
+  it("resolves the complete INT8 high-precision profile", () => {
+    const assets = getRequiredAssets({
+      origin: "https://app.example/",
+      modelBaseUrl: "https://cdn.example/ace-xl",
+      audioQuality: "high",
+    });
+    expect(assets.reduce((sum, asset) => sum + asset.bytes, 0)).toBe(
+      HIGH_PRECISION_GENERATION_DOWNLOAD_BYTES,
+    );
+    for (const local of HIGH_PRECISION_MODEL_FILES) {
+      expect(assets.find((asset) => asset.id === local.id)?.url).toBe(
+        `https://cdn.example/ace-xl/${local.fileName}?build=${PIPELINE_BUILD}`,
+      );
+    }
+    expect(
+      assets.some((asset) =>
+        asset.fileName.includes("xl_turbo_q4"),
+      ),
+    ).toBe(false);
   });
 
   it("supports a single self-hosted directory for every model asset", () => {
@@ -200,9 +292,41 @@ describe("published browser API", () => {
     expect(result.seed).toBe(7);
     expect(result.sampler).toBe("euler");
     expect(result.instrumental).toBe(true);
-    expect(result.timings).toEqual({ dit: 123 });
-    expect(updates.at(-1)?.type).toBe("complete");
+    expect(result.timings).toEqual(
+      expect.objectContaining({
+        dit: 123,
+        "pipeline:audio-buffer": expect.any(Number),
+        "pipeline:audio-worker": expect.any(Number),
+        "pipeline:persistent-storage": expect.any(Number),
+        "pipeline:total": expect.any(Number),
+      }),
+    );
+    const progressUpdates = updates.filter(
+      (update) => update.type === "progress",
+    );
+    expect(progressUpdates[0]).toMatchObject({
+      type: "progress",
+      operation: "generate",
+      progress: 0,
+    });
+    expect(progressUpdates.at(-1)).toMatchObject({
+      type: "progress",
+      operation: "generate",
+      progress: 1,
+    });
+    expect(
+      progressUpdates.every(
+        (update, index) =>
+          update.progress >= 0 &&
+          update.progress <= 1 &&
+          (index === 0 ||
+            update.progress >= progressUpdates[index - 1]!.progress),
+      ),
+    ).toBe(true);
+    expect(runtime.progress).toBe(1);
+    expect(updates.some((update) => update.type === "complete")).toBe(true);
     expect(fakeWorker.terminated).toBe(true);
+    expect(fakeWorker.requests).toHaveLength(1);
     expect(fakeWorker.requests[0]).toMatchObject({
       type: "start",
       prompt: "cinematic instrumental",
@@ -221,6 +345,93 @@ describe("published browser API", () => {
         modelBaseUrl: "https://cdn.example/ace-xl/",
       },
     });
+    const turboRequest = fakeWorker.requests[0];
+    expect(
+      turboRequest && "semanticCodeIds" in turboRequest
+        ? turboRequest.semanticCodeIds
+        : undefined,
+    ).toBeUndefined();
+    expect(result.plan).toBeUndefined();
+    expect(updates).toContainEqual({
+      type: "diagnostic",
+      key: "Turbo model path",
+      value:
+        "direct XL Turbo text/lyric conditioning · 4B semantic planner skipped",
+    });
+    runtime.dispose();
+  });
+
+  it("hands a qualified precomputed plan directly to the audio Worker", async () => {
+    vi.stubGlobal("AudioBuffer", FakeAudioBuffer);
+    const fakeWorker = new FakeWorker();
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => fakeWorker as unknown as Worker,
+      languageWorkerFactory: () => {
+        throw new Error("Precomputed plans must skip the language Worker.");
+      },
+    });
+    const semanticCodeIds = Array.from(
+      { length: 50 },
+      (_, index) => index,
+    );
+    const plannerMetadata = {
+      bpm: 100,
+      caption: "qualified FP32 synthwave",
+      durationSeconds: 10,
+      keyScale: "F major",
+      language: "en",
+      timeSignature: 4 as const,
+    };
+    const result = await runtime.generate({
+      prompt: "synthwave vocal",
+      lyrics: "[Verse]\nNeon light",
+      vocalLanguage: "en",
+      durationSeconds: 10,
+      seed: 42,
+      semanticCodeIds,
+      plannerMetadata,
+    });
+
+    expect(fakeWorker.requests).toHaveLength(1);
+    expect(fakeWorker.requests[0]).toMatchObject({
+      type: "start",
+      prompt: plannerMetadata.caption,
+      semanticCodeIds,
+      plannerMetadata,
+    });
+    expect(result.plan).toMatchObject({
+      model: "external-precomputed-planner",
+      semanticCodeCount: 50,
+    });
+  });
+
+  it("rejects incomplete or malformed precomputed planner conditioning", async () => {
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    const metadata = {
+      bpm: 100,
+      caption: "test",
+      durationSeconds: 10,
+      keyScale: "F major",
+      language: "en",
+      timeSignature: 4 as const,
+    };
+    await expect(
+      runtime.generate({
+        prompt: "test",
+        durationSeconds: 10,
+        semanticCodeIds: Array(50).fill(0),
+      }),
+    ).rejects.toThrow(/supplied together/);
+    await expect(
+      runtime.generate({
+        prompt: "test",
+        durationSeconds: 10,
+        semanticCodeIds: [0, 1, 64_000],
+        plannerMetadata: metadata,
+      }),
+    ).rejects.toThrow(/exactly 50/);
     runtime.dispose();
   });
 
@@ -248,7 +459,9 @@ describe("published browser API", () => {
 
     expect(result.instrumental).toBe(false);
     expect(result.sampler).toBe("heun");
-    expect(fakeWorker.requests[0]).toMatchObject({
+    expect(
+      fakeWorker.requests.find((request) => request.type === "start"),
+    ).toMatchObject({
       type: "start",
       lyrics: "[Verse]\nWe light the dark\n\n[Chorus]\nSing it again",
       vocalLanguage: "en",
@@ -260,6 +473,142 @@ describe("published browser API", () => {
         highScaler: 0.015,
       },
     });
+  });
+
+  it("writes lyrics in an isolated Qwen Worker", async () => {
+    const fakeWorker = new FakeWorker();
+    const runtime = new AceStepWebGpu({
+      languageWorkerFactory: () => fakeWorker as unknown as Worker,
+    });
+
+    const result = await runtime.writeLyrics({
+      prompt: "An upbeat neon synth-pop anthem in English",
+      seed: 17,
+      durationSeconds: 30,
+      maxWords: 66,
+    });
+
+    expect(result.lyrics).toContain("[Chorus]");
+    expect(result.model).toBe(DEFAULT_LYRICS_MODEL);
+    expect(fakeWorker.requests[0]).toEqual({
+      type: "write-lyrics",
+      prompt: "An upbeat neon synth-pop anthem in English",
+      seed: 17,
+      durationSeconds: 30,
+      maxWords: 66,
+      modelId: DEFAULT_LYRICS_MODEL,
+      revision: DEFAULT_LYRICS_MODEL_REVISION,
+    });
+    expect(fakeWorker.terminated).toBe(true);
+  });
+
+  it("runs Qwen, the ACE planner, and audio inference in isolated Workers", async () => {
+    vi.stubGlobal("AudioBuffer", FakeAudioBuffer);
+    const workers: FakeWorker[] = [];
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+    });
+
+    const result = await runtime.generate({
+      prompt: "upbeat neon synth-pop with a clear lead singer",
+      plannerQuality: "high-quality",
+      writeLyrics: true,
+      vocalLanguage: "en",
+      seed: 33,
+      durationSeconds: 30,
+    });
+
+    expect(workers).toHaveLength(3);
+    expect(workers[0]?.requests[0]?.type).toBe("write-lyrics");
+    expect(workers[1]?.requests[0]).toMatchObject({
+      type: "plan-music",
+      lyrics: expect.stringContaining("[Chorus]"),
+      seed: 33,
+    });
+    expect(workers[2]?.requests[0]).toMatchObject({
+      type: "start",
+      lyrics: expect.stringContaining("[Chorus]"),
+      seed: 33,
+      semanticCodeIds: expect.any(Array),
+      plannerMetadata: expect.objectContaining({
+        durationSeconds: 30,
+        timeSignature: 4,
+      }),
+    });
+    expect(result.instrumental).toBe(false);
+    expect(result.lyrics).toContain("[Chorus]");
+  });
+
+  it("selects the INT8-weight / FP32-compute planner explicitly", async () => {
+    const fakeWorker = new FakeWorker();
+    const runtime = new AceStepWebGpu({
+      languageWorkerFactory: () => fakeWorker as unknown as Worker,
+    });
+
+    const result = await runtime.planMusic({
+      prompt: "polished synthwave song",
+      plannerQuality: "high-quality",
+      audioQuality: "high",
+      seed: 42,
+      durationSeconds: 10,
+    });
+
+    expect(fakeWorker.requests[0]).toMatchObject({
+      type: "plan-music",
+      plannerQuality: "high-quality",
+      audioQuality: "high",
+      highQualityModelId: DEFAULT_HIGH_QUALITY_PLANNER_MODEL,
+      highQualityRevision:
+        DEFAULT_HIGH_QUALITY_PLANNER_MODEL_REVISION,
+      assets: {
+        modelBaseUrl: DEFAULT_MODEL_BASE_URL,
+      },
+    });
+    expect(result.plannerQuality).toBe("high-quality");
+  });
+
+  it("expands automatic vocal duration before planning and audio inference", async () => {
+    vi.stubGlobal("AudioBuffer", FakeAudioBuffer);
+    const workers: FakeWorker[] = [];
+    const runtime = new AceStepWebGpu({
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+    });
+    const lyrics = `[Verse]\n${Array.from(
+      { length: 66 },
+      (_, index) => `word${index}`,
+    ).join(" ")}`;
+
+    const result = await runtime.generate({
+      prompt: "clear expressive vocal synth-pop",
+      plannerQuality: "high-quality",
+      lyrics,
+      autoDuration: true,
+      durationSeconds: 30,
+    });
+
+    expect(workers[0]?.requests[0]).toMatchObject({
+      type: "plan-music",
+      autoDuration: true,
+      durationSeconds: 30,
+      recommendedDurationSeconds: 60,
+    });
+    expect(workers[1]?.requests[0]).toMatchObject({
+      type: "start",
+      durationSeconds: 60,
+      plannerMetadata: expect.objectContaining({
+        durationSeconds: 60,
+        durationSource: "recommended",
+      }),
+    });
+    expect(result.durationSeconds).toBe(60);
   });
 
   it("rejects contradictory instrumental captions before downloading models", async () => {
@@ -315,10 +664,10 @@ describe("published browser API", () => {
     expect(results.map((result) => result.seed)).toEqual([10, 11, 12]);
     expect(workers).toHaveLength(3);
     expect(
-      workers.map((worker) => {
-        const request = worker.requests[0];
-        return request?.type === "start" ? request.seed : undefined;
-      }),
+      workers
+        .map((worker) => worker.requests[0])
+        .filter((request) => request?.type === "start")
+        .map((request) => request.seed),
     ).toEqual([10, 11, 12]);
     expect(
       updates
@@ -332,6 +681,24 @@ describe("published browser API", () => {
       "started:12",
       "complete:12",
     ]);
+    const overall = updates.filter(
+      (update) => update.type === "progress",
+    );
+    expect(overall[0]).toMatchObject({
+      operation: "generate-batch",
+      progress: 0,
+    });
+    expect(overall.at(-1)).toMatchObject({
+      operation: "generate-batch",
+      progress: 1,
+    });
+    expect(
+      overall.every(
+        (update, index) =>
+          index === 0 ||
+          update.progress >= overall[index - 1]!.progress,
+      ),
+    ).toBe(true);
   });
 
   it("validates every batch seed before starting any generation", async () => {
@@ -397,6 +764,24 @@ describe("published browser API", () => {
     expect(updates.some((update) => update.type === "cached-model-removed")).toBe(
       true,
     );
+  });
+
+  it("accepts the isolated planner and lyric-writer cache identifiers", async () => {
+    for (const modelId of [
+      "music-planner",
+      "music-planner-high-quality",
+      "lyrics-writer",
+    ]) {
+      const fakeWorker = new FakeWorker();
+      const runtime = new AceStepWebGpu({
+        workerFactory: () => fakeWorker as unknown as Worker,
+      });
+      await runtime.removeCachedModel(modelId);
+      expect(fakeWorker.requests[0]).toMatchObject({
+        type: "remove-cached-model",
+        modelId,
+      });
+    }
   });
 
   it("rejects unknown cache component identifiers before creating a Worker", async () => {

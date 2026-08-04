@@ -13,6 +13,8 @@
   "include": [
     "package-src/**/*.ts",
     "lib/model-manifest.ts",
+    "lib/generation-options.ts",
+    "lib/lyrics.ts",
     "lib/tensor-diagnostics.ts",
     "lib/worker-protocol.ts"
   ],

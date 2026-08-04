@@ -1,7 +1,7 @@
 {
   "name": "ai-music-js",
-  "version": "0.3.1",
-  "description": "Browser-only ACE-Step 1.5 XL Turbo music generation with ONNX Runtime Web and WebGPU.",
+  "version": "0.4.0",
+  "description": "Browser-only ACE-Step 1.5 XL Turbo music generation with selectable INT4/INT8 audio, an FP32 WebGPU VAE, and INT8-weight/FP32-compute semantic planning.",
   "license": "MIT",
   "author": "Emb1ter",
   "repository": {
@@ -26,6 +26,8 @@
   "sideEffects": false,
   "files": [
     "dist",
+    "docs",
+    "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
@@ -41,6 +43,7 @@
       "import": "./dist/index.js"
     },
     "./worker": "./dist/ace-step.worker.js",
+    "./language-worker": "./dist/language.worker.js",
     "./model-assets.json": "./dist/model-assets.json",
     "./wasm/*": "./dist/wasm/*"
   },
@@ -52,7 +55,7 @@
   },
   "scripts": {
     "build": "npm run build:lib",
-    "build:lib": "node scripts/prepare-package-dist.mjs && esbuild package-src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/index.js --sourcemap && vite build --config vite.worker.config.ts && tsc -p tsconfig.lib.json && node scripts/copy-package-assets.mjs",
+    "build:lib": "node scripts/prepare-package-dist.mjs && esbuild package-src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/index.js --sourcemap && vite build --config vite.worker.config.ts && vite build --config vite.language-worker.config.ts && tsc -p tsconfig.lib.json && node scripts/copy-package-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "demo": "vite --config examples/vite/vite.config.ts",

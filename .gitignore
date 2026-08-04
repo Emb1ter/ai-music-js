@@ -4,3 +4,5 @@ examples/vite/dist/
 .DS_Store
 *.tgz
 npm-debug.log*
+__pycache__/
+*.py[cod]

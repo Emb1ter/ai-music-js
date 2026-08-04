@@ -44,9 +44,17 @@ const library = await import(
 const manifest = {
   package: "ai-music-js",
   pipelineBuild: library.PIPELINE_BUILD,
-  totalDownloadBytes: library.TOTAL_DOWNLOAD_BYTES,
+  audioDownloadBytes: library.TOTAL_DOWNLOAD_BYTES,
+  defaultGenerationDownloadBytes:
+    library.DEFAULT_GENERATION_DOWNLOAD_BYTES,
+  highPrecisionGenerationDownloadBytes:
+    library.HIGH_PRECISION_GENERATION_DOWNLOAD_BYTES,
+  fullModelDownloadBytes: library.FULL_MODEL_DOWNLOAD_BYTES,
+  languageModelDownloadBytes: library.LANGUAGE_MODEL_DOWNLOAD_BYTES,
+  languageModels: library.LANGUAGE_MODEL_COMPONENTS,
   npmPackageEmbedsModelWeights: false,
   localModelFiles: library.LOCAL_MODEL_FILES,
+  highPrecisionModelFiles: library.HIGH_PRECISION_MODEL_FILES,
 };
 await writeFile(
   resolve(projectRoot, "dist", "model-assets.json"),

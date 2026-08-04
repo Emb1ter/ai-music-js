@@ -3,16 +3,18 @@ export const ONNX_REVISION = "bdabfb5684fd70fcc76f98cbb51bb9ebc47ee342";
 export const XL_MODEL_REPOSITORY =
   "emb1ter/ACE-Step-v1.5-XL-Turbo-ONNX-WebGPU";
 export const XL_MODEL_REVISION =
-  "0c0e3d4a14aaa9387990e90bf66ec35c7afed25b";
+  "cf185389395b3a725d948a59262f3ab4be4b0ad8";
 export const DEFAULT_MODEL_BASE_URL =
   `https://huggingface.co/${XL_MODEL_REPOSITORY}/resolve/${XL_MODEL_REVISION}/`;
-export const PIPELINE_BUILD = "2026-07-25-xl-turbo-q4-chunked";
+export const PIPELINE_BUILD =
+  "2026-08-03-xl-turbo-fp32-webgpu-vae-v1";
 export const ACESTEP_REPOSITORY = "ACE-Step/Ace-Step1.5";
 export const ACESTEP_REVISION = "19671f406d603126926c1b7e2adc169acbcade22";
 export const CACHE_NAME = `ai-music-js-${ONNX_REVISION.slice(0, 8)}`;
 export const MODEL_NAME = "ACE-Step 1.5 XL Turbo";
 export const MODEL_PARAMETER_COUNT = 4_168_897_088;
 export const DIT_ATTENTION_HEADS = 32;
+export const DIT_PATCH_SIZE = 2;
 export const ORT_WASM_FILE =
   "/wasm/ort-wasm-simd-threaded.asyncify.wasm";
 export const ORT_WASM_MODULE_FILE =
@@ -33,6 +35,12 @@ export const LATENT_CHANNELS = 64;
 export const VAE_UPSAMPLE_FACTOR = 1_920;
 export const INFERENCE_STEPS = 8;
 export const TURBO_SHIFT = 3;
+
+export type AudioQuality = "standard" | "high";
+export const DEFAULT_AUDIO_QUALITY: AudioQuality = "standard";
+
+export const isAudioQuality = (value: unknown): value is AudioQuality =>
+  value === "standard" || value === "high";
 
 export const validateDurationSeconds = (durationSeconds: number) => {
   if (
@@ -70,19 +78,21 @@ export type GraphId =
   | "text-encoder"
   | "lyric-embedding"
   | "condition-encoder"
+  | "audio-code-detokenizer"
   | "dit"
   | "vae";
 
 export type ModelGraph = {
   id: GraphId;
   label: string;
+  quality?: AudioQuality;
   graph: DownloadAsset;
   weights: DownloadAsset[];
   webGpuOnlyBlockers: string[];
 };
 
 const onnxAsset = (
-  group: GraphId,
+  group: string,
   label: string,
   fileName: string,
   bytes: number,
@@ -109,6 +119,8 @@ const graph = (
   weightFiles: number | { fileName: string; bytes: number }[],
   webGpuOnlyBlockers: string[] = [],
   local = false,
+  quality?: AudioQuality,
+  cacheGroup: string = id,
 ): ModelGraph => {
   const files =
     typeof weightFiles === "number"
@@ -117,10 +129,18 @@ const graph = (
   return {
     id,
     label,
-    graph: onnxAsset(id, label, graphFile, graphBytes, "graph", local),
+    quality,
+    graph: onnxAsset(
+      cacheGroup,
+      label,
+      graphFile,
+      graphBytes,
+      "graph",
+      local,
+    ),
     weights: files.map((file, index) =>
       onnxAsset(
-        id,
+        cacheGroup,
         label,
         file.fileName,
         file.bytes,
@@ -133,7 +153,7 @@ const graph = (
   };
 };
 
-export const MODEL_GRAPHS: ModelGraph[] = [
+export const ALL_MODEL_GRAPHS: ModelGraph[] = [
   graph(
     "text-encoder",
     "Qwen3 text encoder · INT4",
@@ -155,6 +175,32 @@ export const MODEL_GRAPHS: ModelGraph[] = [
     "condition_encoder_xl_turbo_q4.onnx",
     2_136_693,
     347_366_896,
+    [],
+    true,
+    "standard",
+  ),
+  graph(
+    "condition-encoder",
+    "ACE XL condition encoder · INT8 high precision",
+    "condition_encoder_xl_turbo_q8.onnx",
+    2_137_573,
+    [
+      {
+        fileName: "condition_encoder_xl_turbo_q8.onnx.data.0",
+        bytes: 656_270_832,
+      },
+    ],
+    [],
+    true,
+    "high",
+    "condition-encoder-int8",
+  ),
+  graph(
+    "audio-code-detokenizer",
+    "ACE XL semantic-code detokenizer · FP16",
+    "audio_code_detokenizer_xl_fp16.onnx",
+    127_091,
+    210_820_224,
     [],
     true,
   ),
@@ -179,14 +225,74 @@ export const MODEL_GRAPHS: ModelGraph[] = [
     ],
     [],
     true,
+    "standard",
+  ),
+  graph(
+    "dit",
+    "ACE-Step XL Turbo 4B DiT · INT8 high precision",
+    "dit_decoder_xl_turbo_q8.onnx",
+    9_026_143,
+    [
+      {
+        fileName: "dit_decoder_xl_turbo_q8.onnx.data.0",
+        bytes: 948_725_760,
+      },
+      {
+        fileName: "dit_decoder_xl_turbo_q8.onnx.data.1",
+        bytes: 945_377_280,
+      },
+      {
+        fileName: "dit_decoder_xl_turbo_q8.onnx.data.2",
+        bytes: 932_659_200,
+      },
+      {
+        fileName: "dit_decoder_xl_turbo_q8.onnx.data.3",
+        bytes: 932_659_200,
+      },
+      {
+        fileName: "dit_decoder_xl_turbo_q8.onnx.data.4",
+        bytes: 932_659_200,
+      },
+      {
+        fileName: "dit_decoder_xl_turbo_q8.onnx.data.5",
+        bytes: 80_547_840,
+      },
+    ],
+    [],
+    true,
+    "high",
+    "dit-int8",
   ),
   graph(
     "vae",
-    "Oobleck VAE decoder · FP16",
-    "vae_decoder_fp16.onnx",
-    88_166,
-    168_770_048,
+    "Official Oobleck VAE decoder · FP32 WebGPU",
+    "vae_decoder_fp32.onnx",
+    1_076_526,
+    337_707_008,
+    [],
+    true,
   ),
+];
+
+export const modelGraphsForAudioQuality = (
+  quality: AudioQuality = DEFAULT_AUDIO_QUALITY,
+) =>
+  ALL_MODEL_GRAPHS.filter(
+    (item) => item.quality === undefined || item.quality === quality,
+  );
+
+/** Backwards-compatible manifest for the default INT4 audio path. */
+export const MODEL_GRAPHS = modelGraphsForAudioQuality();
+export const HIGH_PRECISION_MODEL_GRAPHS =
+  modelGraphsForAudioQuality("high");
+
+export const assetsForAudioQuality = (
+  quality: AudioQuality = DEFAULT_AUDIO_QUALITY,
+) => [
+  ...modelGraphsForAudioQuality(quality).flatMap(
+    ({ graph: graphAsset, weights }) => [graphAsset, ...weights],
+  ),
+  ...SUPPORT_ASSETS,
 ];
 
 export const SUPPORT_ASSETS: DownloadAsset[] = [
@@ -232,19 +338,25 @@ export const SUPPORT_ASSETS: DownloadAsset[] = [
 ];
 
 export const ALL_ASSETS = [
-  ...MODEL_GRAPHS.flatMap(({ graph: graphAsset, weights }) => [
+  ...ALL_MODEL_GRAPHS.flatMap(({ graph: graphAsset, weights }) => [
     graphAsset,
     ...weights,
   ]),
   ...SUPPORT_ASSETS,
 ];
 
-export const TOTAL_DOWNLOAD_BYTES = ALL_ASSETS.reduce(
+export const TOTAL_DOWNLOAD_BYTES = assetsForAudioQuality().reduce(
   (total, asset) => total + asset.bytes,
   0,
 );
 
-export const MODEL_DOWNLOAD_BYTES = MODEL_GRAPHS.reduce(
+export const HIGH_QUALITY_TOTAL_DOWNLOAD_BYTES =
+  assetsForAudioQuality("high").reduce(
+    (total, asset) => total + asset.bytes,
+    0,
+  );
+
+export const MODEL_DOWNLOAD_BYTES = modelGraphsForAudioQuality().reduce(
   (total, item) =>
     total +
     item.graph.bytes +
@@ -252,8 +364,22 @@ export const MODEL_DOWNLOAD_BYTES = MODEL_GRAPHS.reduce(
   0,
 );
 
-export const graphById = (id: GraphId) => {
-  const value = MODEL_GRAPHS.find((item) => item.id === id);
+export const HIGH_PRECISION_MODEL_DOWNLOAD_BYTES =
+  modelGraphsForAudioQuality("high").reduce(
+    (total, item) =>
+      total +
+      item.graph.bytes +
+      item.weights.reduce((sum, asset) => sum + asset.bytes, 0),
+    0,
+  );
+
+export const graphById = (
+  id: GraphId,
+  quality: AudioQuality = DEFAULT_AUDIO_QUALITY,
+) => {
+  const value = modelGraphsForAudioQuality(quality).find(
+    (item) => item.id === id,
+  );
   if (!value) {
     throw new Error(`Unknown graph: ${id}`);
   }
@@ -263,16 +389,27 @@ export const graphById = (id: GraphId) => {
 export const buildCaptionPrompt = (
   caption: string,
   durationSeconds: number,
+  semanticMetadata?: {
+    bpm: number;
+    keyScale: string;
+    timeSignature: 2 | 3 | 4 | 6;
+  },
 ) => `# Instruction
-Fill the audio semantic mask based on the given conditions:
+${
+  semanticMetadata
+    ? "Generate audio semantic tokens based on the given conditions:"
+    : "Fill the audio semantic mask based on the given conditions:"
+}
 
 # Caption
 ${caption.trim()}
 
 # Metas
-- bpm: N/A
-- timesignature: N/A
-- keyscale: N/A
+- bpm: ${semanticMetadata?.bpm ?? "N/A"}
+- timesignature: ${
+  semanticMetadata ? `${semanticMetadata.timeSignature}/4` : "N/A"
+}
+- keyscale: ${semanticMetadata?.keyScale ?? "N/A"}
 - duration: ${validateDurationSeconds(durationSeconds)} seconds
 <|endoftext|>
 `;
