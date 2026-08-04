@@ -94,3 +94,37 @@ export function assertShape(
     );
   }
 }
+
+/**
+ * Zero-pad a frame-major tensor to the model's patch boundary.
+ *
+ * ACE-Step's native DiT pads odd frame counts before its two-frame patch
+ * projection and crops the result afterwards. The exported ONNX graph was
+ * traced through the even-length branch, so callers must preserve that
+ * contract at the graph boundary.
+ */
+export function padFrameMajorTensor(
+  data: Float32Array,
+  frames: number,
+  channels: number,
+  frameMultiple: number,
+) {
+  if (
+    !Number.isInteger(frames) ||
+    frames < 0 ||
+    !Number.isInteger(channels) ||
+    channels <= 0 ||
+    !Number.isInteger(frameMultiple) ||
+    frameMultiple <= 0 ||
+    data.length !== frames * channels
+  ) {
+    throw new RangeError("Invalid frame-major tensor padding request.");
+  }
+  const paddedFrames = Math.ceil(frames / frameMultiple) * frameMultiple;
+  if (paddedFrames === frames) {
+    return { data, frames };
+  }
+  const padded = new Float32Array(paddedFrames * channels);
+  padded.set(data);
+  return { data: padded, frames: paddedFrames };
+}

@@ -6,7 +6,10 @@ import * as ort from "onnxruntime-web/webgpu";
 import {
   ALL_ASSETS,
   CACHE_NAME,
+  DEFAULT_AUDIO_QUALITY,
   DIT_ATTENTION_HEADS,
+  DIT_PATCH_SIZE,
+  HIGH_QUALITY_TOTAL_DOWNLOAD_BYTES,
   INFERENCE_STEPS,
   LATENT_CHANNELS,
   LATENT_FRAME_RATE,
@@ -21,14 +24,18 @@ import {
   TOTAL_DOWNLOAD_BYTES,
   TURBO_SHIFT,
   VAE_UPSAMPLE_FACTOR,
+  assetsForAudioQuality,
   buildCaptionPrompt,
   buildLyricPrompt,
   durationToAudioFrames,
   durationToLatentFrames,
   graphById,
   hasVocalPromptConflict,
+  HIGH_PRECISION_MODEL_DOWNLOAD_BYTES,
+  isAudioQuality,
   isInstrumentalLyrics,
   type DownloadAsset,
+  type AudioQuality,
   type GraphId,
 } from "@/lib/model-manifest";
 import { applyDcw } from "@/lib/dcw";
@@ -47,11 +54,21 @@ import type {
   ResolvedDcwOptions,
   SamplerMode,
 } from "@/lib/generation-options";
+import type { PlannerMetadata } from "@/lib/planner";
 import {
   assertShape,
+  padFrameMajorTensor,
   tensorSummary,
   type TensorSummary,
 } from "@/lib/tensor-diagnostics";
+import {
+  LANGUAGE_CACHE_NAME,
+  LANGUAGE_MODEL_COMPONENTS,
+} from "@/lib/language-model-manifest";
+import {
+  HIGH_QUALITY_PLANNER_EMBEDDING_FILE,
+  HIGH_QUALITY_PLANNER_EMBEDDING_ROW_CACHE_PARAMETER,
+} from "@/lib/planner-quality";
 import { createVaeDecodePlan } from "@/lib/vae-chunking";
 import type {
   CacheInventory,
@@ -101,6 +118,7 @@ const timings: Record<string, number> = {};
 const trace: TensorSummary[] = [];
 let estimatedPeakBytes = 0;
 let runtimeAssets: WorkerAssetConfig = {};
+let runtimeAudioQuality: AudioQuality = DEFAULT_AUDIO_QUALITY;
 const MIN_STORAGE_HEADROOM_BYTES = 512_000_000;
 const PER_FILE_STORAGE_HEADROOM_BYTES = 128_000_000;
 
@@ -513,11 +531,121 @@ const inspectCachedAsset = async (
   };
 };
 
-const cacheInventory = async (): Promise<CacheInventory> => {
+const cachedResponseBytes = async (response: Response) => {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength >= 0) {
+    return contentLength;
+  }
+  return (await response.blob()).size;
+};
+
+const languageAssetUrl = (
+  modelId: string,
+  revision: string,
+  fileName: string,
+) =>
+  `https://huggingface.co/${modelId}/resolve/${encodeURIComponent(revision)}/${fileName}`;
+
+const inspectLanguageModels = async () => {
+  const cache =
+    "caches" in self ? await caches.open(LANGUAGE_CACHE_NAME) : null;
+  const cacheKeys = (await cache?.keys()) ?? [];
+  const models = [];
+  for (const component of LANGUAGE_MODEL_COMPONENTS) {
+    const assets: CachedAssetInfo[] = [];
+    for (const asset of component.assets) {
+      const response = await cache?.match(
+        languageAssetUrl(
+          component.modelId,
+          component.revision,
+          asset.fileName,
+        ),
+      );
+      const storedBytes = response
+        ? await cachedResponseBytes(response)
+        : 0;
+      assets.push({
+        id: `${component.id}:${asset.fileName}`,
+        group: component.id,
+        label: component.label,
+        fileName: asset.fileName,
+        role: asset.role,
+        expectedBytes: asset.bytes,
+        storedBytes,
+        cached: storedBytes === asset.bytes,
+        storage: response ? "cache-api" : null,
+      });
+    }
+    if (component.id === "music-planner-high-quality") {
+      const embeddingUrl = languageAssetUrl(
+        component.modelId,
+        component.revision,
+        HIGH_QUALITY_PLANNER_EMBEDDING_FILE,
+      );
+      let rowCount = 0;
+      let rowBytes = 0;
+      for (const request of cacheKeys) {
+        const url = new URL(request.url);
+        if (
+          `${url.origin}${url.pathname}` !== embeddingUrl ||
+          !url.searchParams.has(
+            HIGH_QUALITY_PLANNER_EMBEDDING_ROW_CACHE_PARAMETER,
+          )
+        ) {
+          continue;
+        }
+        const response = await cache?.match(request);
+        if (!response) continue;
+        rowCount += 1;
+        rowBytes += await cachedResponseBytes(response);
+      }
+      if (rowCount > 0) {
+        assets.push({
+          id: `${component.id}:fp32-embedding:persisted-rows`,
+          group: component.id,
+          label: component.label,
+          fileName:
+            `fp32-embedding/persisted-rows ` +
+            `(${rowCount.toLocaleString()} × 10 KiB)`,
+          role: "weights",
+          expectedBytes: rowBytes,
+          storedBytes: rowBytes,
+          cached: true,
+          storage: "cache-api",
+        });
+      }
+    }
+    const expectedBytes = assets.reduce(
+      (sum, asset) => sum + asset.expectedBytes,
+      0,
+    );
+    const storedBytes = assets.reduce(
+      (sum, asset) =>
+        sum + Math.min(asset.storedBytes, asset.expectedBytes),
+      0,
+    );
+    const complete = assets.every((asset) => asset.cached);
+    models.push({
+      id: component.id,
+      label: component.label,
+      expectedBytes,
+      storedBytes,
+      complete,
+      partial: !complete && storedBytes > 0,
+      assets,
+    });
+  }
+  return models;
+};
+
+const cacheInventory = async (
+  includeLanguageModels = true,
+  inventoryAssets: DownloadAsset[] = ALL_ASSETS,
+): Promise<CacheInventory> => {
   const directory = await opfsDirectory();
   const cache = "caches" in self ? await caches.open(CACHE_NAME) : null;
   const assets: CachedAssetInfo[] = [];
-  for (const asset of ALL_ASSETS) {
+  for (const asset of inventoryAssets) {
     assets.push(await inspectCachedAsset(asset, directory, cache));
   }
 
@@ -547,15 +675,19 @@ const cacheInventory = async (): Promise<CacheInventory> => {
       assets: groupAssets,
     };
   });
-  const expectedBytes = assets.reduce(
+  if (includeLanguageModels) {
+    models.push(...(await inspectLanguageModels()));
+  }
+  const allInventoryAssets = models.flatMap((model) => model.assets);
+  const expectedBytes = allInventoryAssets.reduce(
     (sum, asset) => sum + asset.expectedBytes,
     0,
   );
-  const storedBytes = assets.reduce(
+  const storedBytes = allInventoryAssets.reduce(
     (sum, asset) => sum + Math.min(asset.storedBytes, asset.expectedBytes),
     0,
   );
-  const readyBytes = assets.reduce(
+  const readyBytes = allInventoryAssets.reduce(
     (sum, asset) => sum + (asset.cached ? asset.expectedBytes : 0),
     0,
   );
@@ -597,12 +729,29 @@ const removeCachedAssets = async (assets: DownloadAsset[]) => {
 
 const removeCachedModel = async (modelId: string) => {
   const assets = ALL_ASSETS.filter((asset) => asset.group === modelId);
-  if (assets.length === 0) {
+  const languageComponent = LANGUAGE_MODEL_COMPONENTS.find(
+    (component) => component.id === modelId,
+  );
+  if (assets.length === 0 && !languageComponent) {
     throw new RangeError(`Unknown cached model component: ${modelId}`);
   }
   const before = await cacheInventory();
   const beforeModel = before.models.find((model) => model.id === modelId);
-  await removeCachedAssets(assets);
+  if (languageComponent) {
+    const cache =
+      "caches" in self
+        ? await caches.open(LANGUAGE_CACHE_NAME)
+        : null;
+    const prefix =
+      `https://huggingface.co/${languageComponent.modelId}/resolve/`;
+    for (const request of (await cache?.keys()) ?? []) {
+      if (request.url.startsWith(prefix)) {
+        await cache?.delete(request);
+      }
+    }
+  } else {
+    await removeCachedAssets(assets);
+  }
   return beforeModel?.storedBytes ?? 0;
 };
 
@@ -614,6 +763,7 @@ const pruneSupersededWeights = async () => {
     "condition_encoder_q4_fixed.onnx.data",
     "dit_decoder_q4_verified.onnx.data",
     "dit_decoder_xl_turbo_q4.onnx.data",
+    "vae_decoder_fp16.onnx.data",
   ];
   let removed = 0;
   for (const fileName of obsoleteFiles) {
@@ -637,7 +787,10 @@ const pruneSupersededWeights = async () => {
 
 const clearPersistentAssets = async () => {
   if ("caches" in self) {
-    await caches.delete(CACHE_NAME);
+    await Promise.all([
+      caches.delete(CACHE_NAME),
+      caches.delete(LANGUAGE_CACHE_NAME),
+    ]);
   }
   const storage = (navigator as GpuNavigator).storage;
   if (!storage?.getDirectory) {
@@ -654,36 +807,50 @@ const clearPersistentAssets = async () => {
 const sessionFor = async (
   graphId: GraphId,
   allowWasmFallback: boolean,
+  providerOverride?: "webgpu" | "wasm",
 ) => {
-  const graph = graphById(graphId);
+  const graph = graphById(graphId, runtimeAudioQuality);
   const weightBytes = graph.weights.reduce(
     (sum, asset) => sum + asset.bytes,
     0,
   );
-  const forceWasmForCorrectness = graphId === "vae";
+  const stageGraphId =
+    providerOverride === "wasm"
+      ? `${graphId}:wasm-fallback`
+      : graphId;
+  const loadStage = `load:${stageGraphId}`;
   startStage(
-    `load:${graphId}`,
+    loadStage,
     `Loading ${graph.label} from persistent browser storage`,
   );
 
   try {
     const executionProviders: ort.InferenceSession.ExecutionProviderConfig[] =
-      forceWasmForCorrectness
-        ? ["wasm"]
+      providerOverride
+        ? [providerOverride]
         : allowWasmFallback
           ? ["webgpu", "wasm"]
           : ["webgpu"];
+    const providerLabel = providerOverride
+      ? providerOverride === "webgpu"
+        ? "strict WebGPU"
+        : "WASM fallback"
+      : allowWasmFallback
+        ? "WebGPU + WASM fallback"
+        : "strict WebGPU";
     post({
       type: "diagnostic",
       key: `${graphId} provider`,
-      value: forceWasmForCorrectness
-        ? "WASM correctness mode"
-        : allowWasmFallback
-          ? "WebGPU + WASM fallback"
-          : "strict WebGPU",
+      value: providerLabel,
     });
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      const assetsStage = `assets:${stageGraphId}`;
+      const sessionStage = `session:${stageGraphId}`;
       try {
+        startStage(
+          assetsStage,
+          `Reading ${graph.label} graph and external weights`,
+        );
         const graphBlob = await responseBlob(graph.graph);
         const weightBlobs: Blob[] = [];
         for (const asset of graph.weights) {
@@ -692,6 +859,11 @@ const sessionFor = async (
         // ORT Web materializes each Blob before mounting it in WASM.
         updateEstimatedPeak(graph.graph.bytes + weightBytes * 2);
         const graphBytes = await graphBlob.arrayBuffer();
+        endStage(assetsStage);
+        startStage(
+          sessionStage,
+          `Creating ${graph.label} ONNX Runtime ${providerLabel} session`,
+        );
         const session = await ort.InferenceSession.create(graphBytes, {
           executionProviders,
           externalData: graph.weights.map((asset, index) => ({
@@ -703,9 +875,12 @@ const sessionFor = async (
           enableMemPattern: true,
           preferredOutputLocation: "cpu",
         });
-        endStage(`load:${graphId}`);
+        endStage(sessionStage);
+        endStage(loadStage);
         return session;
       } catch (error) {
+        endStage(assetsStage);
+        endStage(sessionStage);
         const message =
           error instanceof Error ? error.message : String(error);
         const unreadableFile =
@@ -729,7 +904,7 @@ const sessionFor = async (
     }
     throw new Error(`${graph.label} session creation exhausted its retries.`);
   } catch (error) {
-    endStage(`load:${graphId}`);
+    endStage(loadStage);
     const operatorHint =
       graph.webGpuOnlyBlockers.length > 0
         ? `Known WebGPU-only blockers: ${graph.webGpuOnlyBlockers.join(", ")}.`
@@ -840,7 +1015,10 @@ const tokenize = (
   };
 };
 
-const checkCompatibility = async (latentFrames: number) => {
+const checkCompatibility = async (
+  latentFrames: number,
+  audioQuality: AudioQuality,
+) => {
   const gpuNavigator = navigator as GpuNavigator;
   if (!gpuNavigator.gpu) {
     post({
@@ -921,7 +1099,12 @@ const checkCompatibility = async (latentFrames: number) => {
   await pruneSupersededWeights();
   const estimate = await gpuNavigator.storage?.estimate();
   if (estimate) {
-    const inventory = await cacheInventory();
+    // Language models have already run in a separate Worker and are not part
+    // of the audio-stage capacity requirement.
+    const inventory = await cacheInventory(
+      false,
+      assetsForAudioQuality(audioQuality),
+    );
     const missingBytes = inventory.missingBytes;
     const reclaimablePartialBytes = inventory.models.reduce(
       (modelSum, model) =>
@@ -985,8 +1168,11 @@ const checkCompatibility = async (latentFrames: number) => {
 
 const runGeneration = async (
   prompt: string,
+  audioQuality: AudioQuality,
   lyrics: string,
   vocalLanguage: string,
+  semanticCodeIds: number[] | undefined,
+  plannerMetadata: PlannerMetadata | undefined,
   seed: number,
   durationSeconds: number,
   sampler: SamplerMode,
@@ -994,6 +1180,11 @@ const runGeneration = async (
   allowWasmFallback: boolean,
   assets: WorkerAssetConfig = {},
 ) => {
+  if (!isAudioQuality(audioQuality)) {
+    throw new RangeError(
+      `Unknown audio quality: ${String(audioQuality)}.`,
+    );
+  }
   if (
     !Number.isInteger(durationSeconds) ||
     durationSeconds < MIN_DURATION_SECONDS ||
@@ -1005,6 +1196,23 @@ const runGeneration = async (
   }
   const latentFrames = durationToLatentFrames(durationSeconds);
   const audioFrames = durationToAudioFrames(durationSeconds);
+  if (
+    semanticCodeIds &&
+    (semanticCodeIds.length !== durationSeconds * 5 ||
+      semanticCodeIds.some(
+        (code) =>
+          !Number.isInteger(code) || code < 0 || code >= 64_000,
+      ))
+  ) {
+    throw new RangeError(
+      `Semantic planning must supply exactly ${durationSeconds * 5} integer codebook indices from 0 through 63999.`,
+    );
+  }
+  if (Boolean(semanticCodeIds) !== Boolean(plannerMetadata)) {
+    throw new Error(
+      "Semantic code conditioning requires its paired ACE planner metadata.",
+    );
+  }
   const instrumental = isInstrumentalLyrics(lyrics);
   if (hasVocalPromptConflict(prompt, lyrics)) {
     throw new Error(
@@ -1018,6 +1226,7 @@ const runGeneration = async (
   }
   trace.length = 0;
   runtimeAssets = assets;
+  runtimeAudioQuality = audioQuality;
   Object.keys(timings).forEach((key) => delete timings[key]);
   estimatedPeakBytes = 0;
   ort.env.logLevel = "warning";
@@ -1034,29 +1243,37 @@ const runGeneration = async (
   ort.env.webgpu.powerPreference = "high-performance";
 
   startStage("compatibility", "Checking worker-side WebGPU and storage limits");
-  await checkCompatibility(latentFrames);
+  await checkCompatibility(latentFrames, audioQuality);
   endStage("compatibility");
   post({
     type: "diagnostic",
     key: "model",
-    value: MODEL_NAME,
+    value: `${MODEL_NAME} · ${
+      audioQuality === "high" ? "INT8 high precision" : "INT4 standard"
+    }`,
   });
   post({
     type: "diagnostic",
     key: "model download",
-    value: MODEL_DOWNLOAD_BYTES,
+    value:
+      audioQuality === "high"
+        ? HIGH_PRECISION_MODEL_DOWNLOAD_BYTES
+        : MODEL_DOWNLOAD_BYTES,
   });
   post({
     type: "diagnostic",
     key: "total download",
-    value: TOTAL_DOWNLOAD_BYTES,
+    value:
+      audioQuality === "high"
+        ? HIGH_QUALITY_TOTAL_DOWNLOAD_BYTES
+        : TOTAL_DOWNLOAD_BYTES,
   });
   post({
     type: "diagnostic",
     key: "execution policy",
     value: allowWasmFallback
-      ? "WebGPU text/DiT + WASM fallback; VAE forced to WASM"
-      : "strict WebGPU except VAE correctness mode",
+      ? "WebGPU text/DiT with compatibility fallback; FP32 VAE uses strict WebGPU with a full WASM retry"
+      : "strict WebGPU for text, DiT, and the FP32 VAE",
   });
   post({
     type: "diagnostic",
@@ -1095,7 +1312,7 @@ const runGeneration = async (
   ]);
   const textTokens = tokenize(
     tokenizer,
-    buildCaptionPrompt(prompt, durationSeconds),
+    buildCaptionPrompt(prompt, durationSeconds, plannerMetadata),
     256,
   );
   const lyricTokens = tokenize(
@@ -1159,6 +1376,43 @@ const runGeneration = async (
   await embeddingSession.release();
   endStage("lyric-embedding");
 
+  let lmHints = new Float32Array(
+    latentFrames * LATENT_CHANNELS,
+  );
+  if (semanticCodeIds) {
+    startStage(
+      "semantic-detokenizer",
+      `Expanding ${semanticCodeIds.length} ACE planner codes from 5 Hz to ${latentFrames} conditioning frames at 25 Hz`,
+    );
+    const semanticSession = await sessionFor(
+      "audio-code-detokenizer",
+      allowWasmFallback,
+    );
+    const semanticOutputs = await semanticSession.run({
+      code_indices: new ort.Tensor(
+        "int64",
+        BigInt64Array.from(semanticCodeIds, BigInt),
+        [1, semanticCodeIds.length, 1],
+      ),
+    });
+    const semanticTensor =
+      semanticOutputs.semantic_hints_25hz as NumericTensor;
+    const semanticDims = [...semanticTensor.dims];
+    assertShape(
+      semanticDims,
+      [1, latentFrames, LATENT_CHANNELS],
+      "semantic hints",
+    );
+    lmHints = new Float32Array(
+      asFloat32(semanticTensor, "semantic hints"),
+    );
+    recordTensor("semantic_hints_25hz", semanticDims, lmHints);
+    semanticTensor.dispose();
+    await semanticSession.release();
+    updateEstimatedPeak(lmHints.byteLength);
+    endStage("semantic-detokenizer");
+  }
+
   startStage(
     "condition-packing",
     `Projecting and packing caption, ${
@@ -1174,9 +1428,6 @@ const runGeneration = async (
   const chunkMask = new Float32Array(
     latentFrames * LATENT_CHANNELS,
   ).fill(1);
-  const emptyLmHints = new Float32Array(
-    latentFrames * LATENT_CHANNELS,
-  );
   recordTensor(
     "source_silence_latents",
     [1, latentFrames, LATENT_CHANNELS],
@@ -1216,10 +1467,14 @@ const runGeneration = async (
       chunkMask,
       [1, latentFrames, LATENT_CHANNELS],
     ),
-    is_covers: new ort.Tensor("float32", new Float32Array([0]), [1]),
+    is_covers: new ort.Tensor(
+      "float32",
+      new Float32Array([semanticCodeIds ? 1 : 0]),
+      [1],
+    ),
     precomputed_lm_hints_25hz: new ort.Tensor(
       "float32",
-      emptyLmHints,
+      lmHints,
       [1, latentFrames, LATENT_CHANNELS],
     ),
   });
@@ -1277,16 +1532,36 @@ const runGeneration = async (
   );
   const ditSession = await sessionFor("dit", allowWasmFallback);
   const schedule = createTurboSchedule(INFERENCE_STEPS, TURBO_SHIFT);
+  const paddedContext = padFrameMajorTensor(
+    contextLatents,
+    latentFrames,
+    128,
+    DIT_PATCH_SIZE,
+  );
+  const ditFrames = paddedContext.frames;
+  if (ditFrames !== latentFrames) {
+    post({
+      type: "diagnostic",
+      key: "DiT patch padding",
+      value: `${latentFrames} → ${ditFrames} frames`,
+    });
+  }
 
   const evaluateVelocity = async (
     inputLatent: Float32Array,
     timestep: number,
     tensorName: string,
   ) => {
+    const paddedLatent = padFrameMajorTensor(
+      inputLatent,
+      latentFrames,
+      LATENT_CHANNELS,
+      DIT_PATCH_SIZE,
+    );
     const hiddenStatesTensor = new ort.Tensor(
       "float32",
-      inputLatent,
-      [1, latentFrames, LATENT_CHANNELS],
+      paddedLatent.data,
+      [1, ditFrames, LATENT_CHANNELS],
     );
     const timestepTensor = new ort.Tensor(
       "float32",
@@ -1300,8 +1575,8 @@ const runGeneration = async (
     );
     const contextLatentsTensor = new ort.Tensor(
       "float32",
-      contextLatents,
-      contextDims,
+      paddedContext.data,
+      [1, ditFrames, 128],
     );
     try {
       const outputs = await ditSession.run({
@@ -1315,11 +1590,19 @@ const runGeneration = async (
         const velocity = asFloat32(velocityTensor, "DiT velocity");
         assertShape(
           velocityTensor.dims,
-          [1, latentFrames, LATENT_CHANNELS],
+          [1, ditFrames, LATENT_CHANNELS],
           tensorName,
         );
-        recordTensor(tensorName, velocityTensor.dims, velocity);
-        return velocity;
+        const croppedVelocity =
+          ditFrames === latentFrames
+            ? velocity
+            : velocity.slice(0, latentFrames * LATENT_CHANNELS);
+        recordTensor(
+          tensorName,
+          [1, latentFrames, LATENT_CHANNELS],
+          croppedVelocity,
+        );
+        return croppedVelocity;
       } finally {
         velocityTensor.dispose();
       }
@@ -1459,8 +1742,11 @@ const runGeneration = async (
     key: "VAE decode chunks",
     value: vaePlan.length,
   });
-  const vaeSession = await sessionFor("vae", allowWasmFallback);
-  try {
+  const decodeVaeChunks = async (
+    session: ort.InferenceSession,
+    providerLabel: string,
+  ) => {
+    waveform.fill(0);
     for (const chunk of vaePlan) {
       const inputFrames =
         chunk.inputEndFrame - chunk.inputStartFrame;
@@ -1488,62 +1774,105 @@ const runGeneration = async (
       const chunkStage = `vae-decode:${chunk.index + 1}`;
       startStage(
         chunkStage,
-        `VAE chunk ${chunk.index + 1}/${vaePlan.length} · latent frames ${chunk.coreStartFrame}-${chunk.coreEndFrame}`,
+        `VAE chunk ${chunk.index + 1}/${vaePlan.length} · ${providerLabel} · latent frames ${chunk.coreStartFrame}-${chunk.coreEndFrame}`,
       );
-      const inputTensor = new ort.Tensor(
-        "float32",
-        chunkLatent,
-        [1, LATENT_CHANNELS, inputFrames],
-      );
-      let vaeOutputs: ort.InferenceSession.OnnxValueMapType;
       try {
-        vaeOutputs = await vaeSession.run({
-          latents: inputTensor,
-        });
-      } catch (error) {
-        throw new Error(
-          `VAE chunk ${chunk.index + 1}/${vaePlan.length} failed for ${coreFrames / LATENT_FRAME_RATE} seconds of output. ${error instanceof Error ? error.message : String(error)}`,
+        const inputTensor = new ort.Tensor(
+          "float32",
+          chunkLatent,
+          [1, LATENT_CHANNELS, inputFrames],
         );
-      } finally {
-        inputTensor.dispose();
-      }
-
-      const waveformTensor = vaeOutputs.waveform as NumericTensor;
-      try {
-        const chunkAudioFrames = inputFrames * VAE_UPSAMPLE_FACTOR;
-        assertShape(
-          waveformTensor.dims,
-          [1, 2, chunkAudioFrames],
-          `decoded waveform chunk ${chunk.index + 1}`,
-        );
-        const chunkWaveform = asFloat32(
-          waveformTensor,
-          `decoded waveform chunk ${chunk.index + 1}`,
-        );
-        const cropStart =
-          chunk.cropStartFrame * VAE_UPSAMPLE_FACTOR;
-        const coreAudioFrames = coreFrames * VAE_UPSAMPLE_FACTOR;
-        const destinationStart =
-          chunk.coreStartFrame * VAE_UPSAMPLE_FACTOR;
-        for (let channel = 0; channel < 2; channel += 1) {
-          const sourceStart =
-            channel * chunkAudioFrames + cropStart;
-          waveform.set(
-            chunkWaveform.subarray(
-              sourceStart,
-              sourceStart + coreAudioFrames,
-            ),
-            channel * audioFrames + destinationStart,
+        let vaeOutputs: ort.InferenceSession.OnnxValueMapType;
+        try {
+          vaeOutputs = await session.run({
+            latents: inputTensor,
+          });
+        } catch (error) {
+          throw new Error(
+            `VAE chunk ${chunk.index + 1}/${vaePlan.length} failed for ${coreFrames / LATENT_FRAME_RATE} seconds of output. ${error instanceof Error ? error.message : String(error)}`,
           );
+        } finally {
+          inputTensor.dispose();
+        }
+
+        const waveformTensor = vaeOutputs.waveform as NumericTensor;
+        try {
+          const chunkAudioFrames = inputFrames * VAE_UPSAMPLE_FACTOR;
+          assertShape(
+            waveformTensor.dims,
+            [1, 2, chunkAudioFrames],
+            `decoded waveform chunk ${chunk.index + 1}`,
+          );
+          const chunkWaveform = asFloat32(
+            waveformTensor,
+            `decoded waveform chunk ${chunk.index + 1}`,
+          );
+          const cropStart =
+            chunk.cropStartFrame * VAE_UPSAMPLE_FACTOR;
+          const coreAudioFrames = coreFrames * VAE_UPSAMPLE_FACTOR;
+          const destinationStart =
+            chunk.coreStartFrame * VAE_UPSAMPLE_FACTOR;
+          for (let channel = 0; channel < 2; channel += 1) {
+            const sourceStart =
+              channel * chunkAudioFrames + cropStart;
+            waveform.set(
+              chunkWaveform.subarray(
+                sourceStart,
+                sourceStart + coreAudioFrames,
+              ),
+              channel * audioFrames + destinationStart,
+            );
+          }
+        } finally {
+          waveformTensor.dispose();
         }
       } finally {
-        waveformTensor.dispose();
+        endStage(chunkStage);
       }
-      endStage(chunkStage);
+    }
+  };
+
+  let vaeSession: ort.InferenceSession | undefined;
+  let vaeProvider = "FP32 WebGPU";
+  try {
+    try {
+      vaeSession = await sessionFor("vae", false, "webgpu");
+    } catch (error) {
+      if (!allowWasmFallback) throw error;
+      post({
+        type: "diagnostic",
+        key: "VAE WebGPU fallback",
+        value: `Session creation failed; retrying the same FP32 graph on WASM. ${error instanceof Error ? error.message : String(error)}`,
+      });
+      vaeProvider = "FP32 WASM fallback";
+      vaeSession = await sessionFor("vae", false, "wasm");
+    }
+
+    try {
+      await decodeVaeChunks(vaeSession, vaeProvider);
+    } catch (error) {
+      if (!allowWasmFallback || vaeProvider !== "FP32 WebGPU") {
+        throw error;
+      }
+      post({
+        type: "diagnostic",
+        key: "VAE WebGPU fallback",
+        value: `Inference failed; restarting all VAE chunks with the same FP32 graph on WASM. ${error instanceof Error ? error.message : String(error)}`,
+      });
+      await vaeSession.release();
+      vaeSession = undefined;
+      vaeProvider = "FP32 WASM fallback";
+      vaeSession = await sessionFor("vae", false, "wasm");
+      await decodeVaeChunks(vaeSession, vaeProvider);
     }
   } finally {
-    await vaeSession.release();
+    await vaeSession?.release().catch(() => undefined);
   }
+  post({
+    type: "diagnostic",
+    key: "VAE execution provider",
+    value: vaeProvider,
+  });
   recordTensor("waveform", [1, 2, audioFrames], waveform);
   const channelWindowRms = (
     channel: number,
@@ -1590,7 +1919,7 @@ const runGeneration = async (
   const right = waveform.slice(audioFrames, audioFrames * 2);
   const wav = encodeStereoWav(left, right, SAMPLE_RATE);
   updateEstimatedPeak(
-    graphById("vae").weights.reduce(
+    graphById("vae", audioQuality).weights.reduce(
       (sum, asset) => sum + asset.bytes,
       0,
     ) +
@@ -1605,6 +1934,7 @@ const runGeneration = async (
     {
       type: "complete",
       seed,
+      audioQuality,
       sampler,
       instrumental,
       wav,
@@ -1652,8 +1982,11 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     }
     await runGeneration(
       event.data.prompt,
+      event.data.audioQuality,
       event.data.lyrics,
       event.data.vocalLanguage,
+      event.data.semanticCodeIds,
+      event.data.plannerMetadata,
       event.data.seed,
       event.data.durationSeconds,
       event.data.sampler,

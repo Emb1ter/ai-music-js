@@ -32,7 +32,38 @@
               <select id="mode">
                 <option value="instrumental">Instrumental</option>
                 <option value="vocals">Vocals with my lyrics</option>
+                <option value="ai-vocals">
+                  Vocals · Qwen3.5 writes lyrics
+                </option>
               </select>
+            </label>
+            <label>
+              <span>Audio precision</span>
+              <select id="audio-quality">
+                <option value="standard">
+                  Standard · INT4 · 5.63 GB
+                </option>
+                <option value="high" selected>
+                  High precision · INT8 · 8.00 GB
+                </option>
+              </select>
+              <small>
+                INT8 closely tracks the native Turbo condition and DiT tensors.
+              </small>
+            </label>
+            <label>
+              <span>Semantic planning</span>
+              <select id="planner-quality">
+                <option value="turbo">
+                  Turbo · direct XL · 5.63 GB total
+                </option>
+                <option value="high-quality">
+                  High quality · INT8/FP32 planner · +4.63 GB
+                </option>
+              </select>
+              <small>
+                High quality adds prompt-dependent 5 Hz semantic planning.
+              </small>
             </label>
             <label>
               <span>Sampler</span>
@@ -54,12 +85,19 @@
             <label>
               <span>Duration</span>
               <select id="duration">
+                <option value="auto">
+                  Auto from lyrics · starts at 30s
+                </option>
                 <option value="10">10 seconds</option>
                 <option value="20">20 seconds</option>
-                <option value="30">30 seconds</option>
+                <option value="30" selected>30 seconds</option>
                 <option value="60">60 seconds</option>
                 <option value="120">120 seconds</option>
               </select>
+              <small>
+                Auto lets ACE Phase 1 choose the final duration without
+                going below the lyric-fit recommendation.
+              </small>
             </label>
             <label>
               <span>Sequential results</span>
@@ -100,6 +138,15 @@
               maxlength="4096"
               placeholder="[Verse]&#10;Write your first verse here&#10;&#10;[Chorus]&#10;Write a memorable chorus"
             ></textarea>
+            <small id="lyrics-guidance">
+              These lyrics are passed directly to ACE-Step.
+            </small>
+            <div
+              id="lyrics-fit"
+              class="lyrics-fit"
+              role="status"
+              aria-live="polite"
+            ></div>
           </div>
 
           <div class="feature-panel dcw-panel">
@@ -157,9 +204,12 @@
           </div>
 
           <p class="notice">
-            First use downloads about 5.25 GB. Vocal captions must explicitly
-            request singing; Euler SDE is restricted to instrumentals because
-            it failed the vocal quality gate.
+            Standard audio uses the 5.63 GB INT4 path. High-precision audio
+            uses 8.00 GB of INT8 assets. Both decode with the validated FP32
+            WebGPU VAE. Semantic high quality adds a 4.63 GB INT8-weight /
+            FP32-compute planner.
+            AI-written lyrics add a pinned 0.49 GB Qwen3.5 model. Planner
+            resources are released before audio inference.
           </p>
         </div>
 
@@ -171,6 +221,50 @@
           <p id="detail">Choose a prompt and generate your first clip.</p>
           <progress id="progress" max="1" value="0"></progress>
           <div id="progress-label" class="progress-label">Waiting</div>
+          <div class="generation-clock" aria-label="Generation timing">
+            <span>Total generation time</span>
+            <strong id="generation-elapsed">Not started</strong>
+          </div>
+          <div class="timing-breakdown" aria-label="Generation stage timings">
+            <div class="timing-breakdown-heading">Stage breakdown</div>
+            <div id="timing-list" class="timing-list">
+              <span class="timing-empty">Run a generation to collect timings.</span>
+            </div>
+            <small>Parent stages include their child stages and should not be summed.</small>
+          </div>
+          <div
+            id="planner-profile"
+            class="planner-profile"
+            aria-label="Detailed high-quality planner timings"
+            hidden
+          >
+            <div class="planner-profile-heading">
+              <span>Production planner profile</span>
+              <strong id="planner-profile-status">Waiting</strong>
+            </div>
+            <p id="planner-profile-input" class="planner-profile-note"></p>
+            <p id="planner-profile-embedding" class="planner-profile-note"></p>
+            <div class="planner-profile-table-wrap">
+              <table class="planner-profile-table">
+                <thead>
+                  <tr>
+                    <th>Phase / stage</th>
+                    <th>Total</th>
+                    <th>Calls</th>
+                    <th>Average</th>
+                    <th>Minimum</th>
+                    <th>Maximum</th>
+                  </tr>
+                </thead>
+                <tbody id="planner-profile-rows"></tbody>
+              </table>
+            </div>
+            <small>
+              Bold parent rows include child work. SHA-256 fingerprints let
+              the experiment and library inputs be compared without logging
+              prompt or lyric text.
+            </small>
+          </div>
 
           <audio id="audio" controls hidden></audio>
           <a id="download" class="download" hidden>Download WAV</a>
@@ -199,11 +293,25 @@
         <p id="cache-summary" class="cache-summary">
           Inspecting model files stored by this site…
         </p>
+        <div class="storage-overview" aria-live="polite">
+          <div class="storage-stat storage-stat-primary">
+            <span class="storage-stat-label">Available for model storage</span>
+            <strong id="storage-available">Checking…</strong>
+          </div>
+          <div class="storage-stat">
+            <span class="storage-stat-label">Used by this site</span>
+            <strong id="storage-used">Checking…</strong>
+          </div>
+          <div class="storage-stat">
+            <span class="storage-stat-label">Browser quota</span>
+            <strong id="storage-quota">Checking…</strong>
+          </div>
+        </div>
         <div id="cache-list" class="cache-list" aria-live="polite"></div>
         <p class="cache-note">
-          Browser storage belongs to the exact site origin. A new ngrok
-          hostname has a separate cache; clear old origins in Chromium site
-          settings.
+          Values are Chromium estimates for this exact site origin, not total
+          free disk space. A new ngrok hostname has a separate cache; clear old
+          origins in Chromium site settings.
         </p>
       </section>
 
