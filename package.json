@@ -1,6 +1,6 @@
 {
   "name": "ai-music-js",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Browser-only ACE-Step 1.5 XL Turbo music generation with selectable INT4/INT8 audio, an FP32 WebGPU VAE, and INT8-weight/FP32-compute semantic planning.",
   "license": "MIT",
   "author": "Emb1ter",
@@ -60,7 +60,9 @@
     "test": "vitest run --config vitest.config.ts",
     "demo": "vite --config examples/vite/vite.config.ts",
     "demo:build": "vite build --config examples/vite/vite.config.ts",
-    "check": "npm run test && npm run typecheck && npm run build:lib && npm run demo:build && npm pack --dry-run --ignore-scripts",
+    "lyrics:lab": "vite --config experiments/lyrics-lab/vite.config.ts",
+    "lyrics:lab:build": "vite build --config experiments/lyrics-lab/vite.config.ts",
+    "check": "npm run test && npm run typecheck && npm run build:lib && npm run demo:build && npm run lyrics:lab:build && npm pack --dry-run --ignore-scripts",
     "prepublishOnly": "npm run check"
   },
   "devDependencies": {

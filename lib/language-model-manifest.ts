@@ -3,6 +3,14 @@ import {
   DEFAULT_LYRICS_MODEL_REVISION,
 } from "./lyrics";
 import {
+  BUILT_IN_LYRICS_MODELS,
+  QWEN35_2B_MODEL,
+  QWEN35_2B_MODEL_REVISION,
+  RHYMEAI_GEMMA4_E2B_MODEL,
+  RHYMEAI_GEMMA4_E2B_MODEL_BASE_URL,
+  RHYMEAI_GEMMA4_E2B_MODEL_REVISION,
+} from "./lyrics-models";
+import {
   DEFAULT_PLANNER_MODEL,
   DEFAULT_PLANNER_MODEL_REVISION,
 } from "./planner";
@@ -23,10 +31,14 @@ export type LanguageModelComponent = {
   id:
     | "music-planner"
     | "music-planner-high-quality"
-    | "lyrics-writer";
+    | "lyrics-writer"
+    | "lyrics-writer-qwen-2b"
+    | "lyrics-writer-rhymeai-e2b"
+    | "lyrics-writer-rhymeai-e4b-v3";
   label: string;
   modelId: string;
   revision: string;
+  modelBaseUrl?: string;
   assets: readonly LanguageModelAsset[];
 };
 
@@ -108,6 +120,143 @@ export const LYRICS_MODEL_ASSETS = [
   },
 ] as const satisfies readonly LanguageModelAsset[];
 
+export const QWEN35_2B_MODEL_ASSETS = [
+  { fileName: "config.json", bytes: 2_993, role: "tokenizer" },
+  {
+    fileName: "generation_config.json",
+    bytes: 248,
+    role: "tokenizer",
+  },
+  {
+    fileName: "chat_template.jinja",
+    bytes: 7_755,
+    role: "tokenizer",
+  },
+  {
+    fileName: "tokenizer.json",
+    bytes: 19_226_111,
+    role: "tokenizer",
+  },
+  {
+    fileName: "tokenizer_config.json",
+    bytes: 9_161,
+    role: "tokenizer",
+  },
+  {
+    fileName: "onnx/decoder_model_merged_q4f16.onnx",
+    bytes: 707_377,
+    role: "graph",
+  },
+  {
+    fileName: "onnx/decoder_model_merged_q4f16.onnx_data",
+    bytes: 1_088_892_928,
+    role: "weights",
+  },
+  {
+    fileName: "onnx/embed_tokens_q4f16.onnx",
+    bytes: 1_064,
+    role: "graph",
+  },
+  {
+    fileName: "onnx/embed_tokens_q4f16.onnx_data",
+    bytes: 294_010_880,
+    role: "weights",
+  },
+] as const satisfies readonly LanguageModelAsset[];
+
+export const RHYMEAI_GEMMA4_E2B_MODEL_ASSETS = [
+  { fileName: "config.json", bytes: 5_549, role: "tokenizer" },
+  {
+    fileName: "generation_config.json",
+    bytes: 238,
+    role: "tokenizer",
+  },
+  {
+    fileName: "chat_template.jinja",
+    bytes: 16_317,
+    role: "tokenizer",
+  },
+  {
+    fileName: "tokenizer.json",
+    bytes: 19_439_251,
+    role: "tokenizer",
+  },
+  {
+    fileName: "tokenizer_config.json",
+    bytes: 18_807,
+    role: "tokenizer",
+  },
+  {
+    fileName: "onnx/decoder_model_merged_q4f16.onnx",
+    bytes: 673_231,
+    role: "graph",
+  },
+  {
+    fileName: "onnx/decoder_model_merged_q4f16.onnx_data",
+    bytes: 1_519_700_992,
+    role: "weights",
+  },
+  {
+    fileName: "onnx/embed_tokens_q4f16.onnx",
+    bytes: 5_621,
+    role: "graph",
+  },
+  {
+    fileName: "onnx/embed_tokens_q4f16.onnx_data",
+    bytes: 1_590_689_792,
+    role: "weights",
+  },
+] as const satisfies readonly LanguageModelAsset[];
+
+export const RHYMEAI_GEMMA4_E4B_V3_MODEL_ASSETS = [
+  { fileName: "config.json", bytes: 5_741, role: "tokenizer" },
+  {
+    fileName: "generation_config.json",
+    bytes: 238,
+    role: "tokenizer",
+  },
+  {
+    fileName: "chat_template.jinja",
+    bytes: 16_317,
+    role: "tokenizer",
+  },
+  {
+    fileName: "tokenizer.json",
+    bytes: 19_439_251,
+    role: "tokenizer",
+  },
+  {
+    fileName: "tokenizer_config.json",
+    bytes: 18_807,
+    role: "tokenizer",
+  },
+  {
+    fileName: "onnx/decoder_model_merged_q4f16.onnx",
+    bytes: 850_610,
+    role: "graph",
+  },
+  {
+    fileName: "onnx/decoder_model_merged_q4f16.onnx_data",
+    bytes: 2_074_847_232,
+    role: "weights",
+  },
+  {
+    fileName: "onnx/decoder_model_merged_q4f16.onnx_data_1",
+    bytes: 812_318_720,
+    role: "weights",
+  },
+  {
+    fileName: "onnx/embed_tokens_q4f16.onnx",
+    bytes: 5_619,
+    role: "graph",
+  },
+  {
+    fileName: "onnx/embed_tokens_q4f16.onnx_data",
+    bytes: 2_017_460_224,
+    role: "weights",
+  },
+] as const satisfies readonly LanguageModelAsset[];
+
 export const HIGH_QUALITY_PLANNER_MODEL_ASSETS = [
   { fileName: "config.json", bytes: 1_762, role: "tokenizer" },
   {
@@ -185,6 +334,30 @@ export const LANGUAGE_MODEL_COMPONENTS = [
     revision: DEFAULT_LYRICS_MODEL_REVISION,
     assets: LYRICS_MODEL_ASSETS,
   },
+  {
+    id: "lyrics-writer-qwen-2b",
+    label: "Qwen3.5 lyric writer 2B · Q4F16",
+    modelId: QWEN35_2B_MODEL,
+    revision: QWEN35_2B_MODEL_REVISION,
+    assets: QWEN35_2B_MODEL_ASSETS,
+  },
+  {
+    id: "lyrics-writer-rhymeai-e2b",
+    label: "RhymeAI Gemma 4 E2B lyric writer · Q4F16",
+    modelId: RHYMEAI_GEMMA4_E2B_MODEL,
+    revision: RHYMEAI_GEMMA4_E2B_MODEL_REVISION,
+    modelBaseUrl: RHYMEAI_GEMMA4_E2B_MODEL_BASE_URL,
+    assets: RHYMEAI_GEMMA4_E2B_MODEL_ASSETS,
+  },
+  {
+    id: "lyrics-writer-rhymeai-e4b-v3",
+    label: "RhymeAI Gemma 4 E4B v3 lyric writer · Q4F16",
+    modelId:
+      BUILT_IN_LYRICS_MODELS["rhymeai-gemma4-e4b-v3-q4f16"].modelId,
+    revision:
+      BUILT_IN_LYRICS_MODELS["rhymeai-gemma4-e4b-v3-q4f16"].revision,
+    assets: RHYMEAI_GEMMA4_E4B_V3_MODEL_ASSETS,
+  },
 ] as const satisfies readonly LanguageModelComponent[];
 
 export const PLANNER_MODEL_DOWNLOAD_BYTES = PLANNER_MODEL_ASSETS.reduce(
@@ -197,6 +370,21 @@ export const LYRICS_MODEL_DOWNLOAD_BYTES = LYRICS_MODEL_ASSETS.reduce(
   0,
 );
 
+export const QWEN35_2B_MODEL_DOWNLOAD_BYTES =
+  QWEN35_2B_MODEL_ASSETS.reduce((sum, asset) => sum + asset.bytes, 0);
+
+export const RHYMEAI_GEMMA4_E2B_MODEL_DOWNLOAD_BYTES =
+  RHYMEAI_GEMMA4_E2B_MODEL_ASSETS.reduce(
+    (sum, asset) => sum + asset.bytes,
+    0,
+  );
+
+export const RHYMEAI_GEMMA4_E4B_V3_MODEL_DOWNLOAD_BYTES =
+  RHYMEAI_GEMMA4_E4B_V3_MODEL_ASSETS.reduce(
+    (sum, asset) => sum + asset.bytes,
+    0,
+  );
+
 export const HIGH_QUALITY_PLANNER_MODEL_DOWNLOAD_BYTES =
   HIGH_QUALITY_PLANNER_MODEL_ASSETS.reduce(
     (sum, asset) => sum + asset.bytes,
@@ -206,4 +394,7 @@ export const HIGH_QUALITY_PLANNER_MODEL_DOWNLOAD_BYTES =
 export const LANGUAGE_MODEL_DOWNLOAD_BYTES =
   PLANNER_MODEL_DOWNLOAD_BYTES +
   HIGH_QUALITY_PLANNER_MODEL_DOWNLOAD_BYTES +
-  LYRICS_MODEL_DOWNLOAD_BYTES;
+  LYRICS_MODEL_DOWNLOAD_BYTES +
+  QWEN35_2B_MODEL_DOWNLOAD_BYTES +
+  RHYMEAI_GEMMA4_E2B_MODEL_DOWNLOAD_BYTES +
+  RHYMEAI_GEMMA4_E4B_V3_MODEL_DOWNLOAD_BYTES;

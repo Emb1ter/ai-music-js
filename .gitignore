@@ -1,6 +1,9 @@
 node_modules/
+.venv*/
 dist/
 examples/vite/dist/
+experiments/*/dist/
+experiments/lyrics-lab/public/models/
 .DS_Store
 *.tgz
 npm-debug.log*

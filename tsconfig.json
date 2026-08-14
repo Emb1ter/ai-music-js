@@ -22,7 +22,13 @@
     "workers/**/*.ts",
     "tests/**/*.ts",
     "examples/vite/src/**/*.ts",
+    "experiments/**/*.ts",
     "*.config.ts"
   ],
-  "exclude": ["node_modules", "dist", "examples/vite/dist"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "examples/vite/dist",
+    "experiments/**/dist"
+  ]
 }

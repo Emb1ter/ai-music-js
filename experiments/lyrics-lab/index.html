@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A local A/B prompt lab for browser-based ai-music-js lyric models."
+    />
+    <title>ai-music-js · local lyric-model lab</title>
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <p class="eyebrow">ai-music-js experiment 01</p>
+        <h1>Local <em>lyric-model lab</em></h1>
+        <p class="lede">
+          Compare sixteen prompt strategies using a selectable local lyric model
+          with the same seed and sampling settings. Six deliberately different
+          story briefs help expose overfitting. The 2B model is selected by default; 4B is available for
+          higher-capacity testing and 0.8B remains the production baseline.
+          This page never loads the ACE-Step audio pipeline.
+        </p>
+      </header>
+
+      <section class="panel brief-panel" aria-labelledby="brief-title">
+        <div class="panel-heading">
+          <div>
+            <p class="step">01 · shared input</p>
+            <h2 id="brief-title">Describe the song</h2>
+          </div>
+          <div id="model-status" class="model-status">Model not loaded</div>
+        </div>
+
+        <div class="brief-presets">
+          <label for="brief-preset">
+            <span>Test brief</span>
+            <select id="brief-preset"></select>
+            <small id="brief-focus"></small>
+          </label>
+        </div>
+
+        <label for="brief">Song brief</label>
+        <textarea id="brief" rows="6"></textarea>
+
+        <div class="controls">
+          <label class="model-picker">
+            <span>Lyric model</span>
+            <select id="model"></select>
+            <small>
+              Switching releases the current GPU model. HauhauCS is an
+              experimental local conversion with safety alignment removed;
+              RhymeAI is a local Gemma 4 LoRA-to-ONNX conversion.
+            </small>
+          </label>
+          <label>
+            <span>Language</span>
+            <select id="language">
+              <option value="English">English</option>
+              <option value="Spanish">Spanish</option>
+              <option value="German">German</option>
+              <option value="French">French</option>
+              <option value="Italian">Italian</option>
+              <option value="Portuguese">Portuguese</option>
+            </select>
+          </label>
+          <label>
+            <span>Duration</span>
+            <select id="duration">
+              <option value="30">30 seconds</option>
+              <option value="60">60 seconds</option>
+              <option value="90">90 seconds</option>
+              <option value="120">120 seconds</option>
+            </select>
+          </label>
+          <label>
+            <span>Word budget</span>
+            <input id="max-words" type="number" min="20" max="450" value="40" />
+            <small id="budget-hint">Backend-matched budget for 30 seconds.</small>
+          </label>
+          <label>
+            <span>Seed</span>
+            <input id="seed" type="number" min="0" max="2147483647" value="42" />
+          </label>
+        </div>
+
+        <details class="advanced">
+          <summary>Sampling controls</summary>
+          <div class="controls sampling-controls">
+            <label>
+              <span>Temperature</span>
+              <input id="temperature" type="number" min="0.1" max="2" step="0.05" value="0.55" />
+            </label>
+            <label>
+              <span>Top K</span>
+              <input id="top-k" type="number" min="0" max="100" step="1" value="20" />
+            </label>
+            <label>
+              <span>Top P</span>
+              <input id="top-p" type="number" min="0.1" max="1" step="0.05" value="1" />
+            </label>
+            <label>
+              <span>Repetition penalty</span>
+              <input id="repetition-penalty" type="number" min="1" max="2" step="0.05" value="1.15" />
+            </label>
+            <label>
+              <span>Maximum new tokens</span>
+              <input id="max-new-tokens" type="number" min="64" max="700" step="1" value="500" />
+            </label>
+          </div>
+        </details>
+
+        <div class="progress-row" aria-live="polite">
+          <progress id="progress" max="1" value="0"></progress>
+          <span id="progress-label">Ready</span>
+        </div>
+
+        <div class="actions">
+          <button id="run-recommended" type="button">Compare C + G + I</button>
+          <button id="run-rhymeai" class="secondary" type="button">Compare K + O + P + Q long-form</button>
+          <button id="run-all" class="secondary" type="button">Run all variants</button>
+          <button id="cancel" class="secondary" type="button" disabled>Cancel</button>
+        </div>
+      </section>
+
+      <section class="panel batch-panel" aria-labelledby="batch-title">
+        <div class="panel-heading">
+          <div>
+            <p class="step">02 · automated evaluation</p>
+            <h2 id="batch-title">Run the complete test matrix</h2>
+          </div>
+          <div id="batch-count" class="model-status">0 runs selected</div>
+        </div>
+        <p class="batch-lede">
+          Runs sequentially, grouped by model, so only one WebGPU model is held
+          in memory. The current system-prompt editor contents are snapshotted
+          when the run starts. Completed and failed cases are both exportable.
+        </p>
+
+        <div class="batch-selectors">
+          <fieldset>
+            <legend>Models</legend>
+            <div id="batch-models" class="choice-list"></div>
+          </fieldset>
+          <fieldset>
+            <legend>System prompts</legend>
+            <div id="batch-variants" class="choice-list compact"></div>
+          </fieldset>
+          <fieldset>
+            <legend>Predefined stories</legend>
+            <div id="batch-stories" class="choice-list"></div>
+          </fieldset>
+        </div>
+
+        <div class="batch-actions">
+          <button id="run-batch" type="button">Run selected matrix</button>
+          <button id="download-batch-csv" class="secondary" type="button" disabled>
+            Download CSV
+          </button>
+          <button id="download-batch-json" class="secondary" type="button" disabled>
+            Download JSON
+          </button>
+          <button id="clear-batch" class="secondary" type="button" disabled>
+            Clear results
+          </button>
+        </div>
+
+        <div class="progress-row batch-progress-row" aria-live="polite">
+          <progress id="batch-progress" max="1" value="0"></progress>
+          <span id="batch-status">Ready</span>
+        </div>
+
+        <div class="batch-table-wrap">
+          <table class="batch-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Model</th>
+                <th>Story</th>
+                <th>Prompt</th>
+                <th>Status</th>
+                <th>Words</th>
+                <th>Time</th>
+                <th>Preview / error</th>
+              </tr>
+            </thead>
+            <tbody id="batch-results">
+              <tr class="empty-row"><td colspan="8">No batch results yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="comparison" aria-label="Prompt comparison">
+        <article class="panel variant" data-variant="a">
+          <div class="variant-heading">
+            <div>
+              <p class="step">A · production baseline</p>
+              <h2>Current prompt</h2>
+            </div>
+            <button class="small run-one" data-run="a" type="button">Run A</button>
+          </div>
+          <p class="variant-note">
+            Reproduces the system prompt and timed user prompt used by
+            <code>writeLyrics()</code> today.
+          </p>
+          <label for="system-a">System prompt</label>
+          <textarea id="system-a" class="prompt-editor" rows="18"></textarea>
+          <label for="user-a">Effective user prompt</label>
+          <textarea id="user-a" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-a">Not run</div>
+          <div class="metrics" id="metrics-a"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-a" type="button">Copy</button>
+            </div>
+            <pre id="processed-a">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-a"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant candidate" data-variant="b">
+          <div class="variant-heading">
+            <div>
+              <p class="step">B · candidate</p>
+              <h2>Songwriter prompt</h2>
+            </div>
+            <button class="small run-one" data-run="b" type="button">Run B</button>
+          </div>
+          <p class="variant-note">
+            Prioritizes a specific point of view, concrete details, a memorable
+            hook, short singable lines and an explicit duration-sized structure.
+          </p>
+          <label for="system-b">System prompt</label>
+          <textarea id="system-b" class="prompt-editor" rows="18"></textarea>
+          <label for="user-b">Effective user prompt</label>
+          <textarea id="user-b" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-b">Not run</div>
+          <div class="metrics" id="metrics-b"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-b" type="button">Copy</button>
+            </div>
+            <pre id="processed-b">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-b"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant strict" data-variant="c">
+          <div class="variant-heading">
+            <div>
+              <p class="step">C · strict budget</p>
+              <h2>Count before answering</h2>
+            </div>
+            <button class="small run-one" data-run="c" type="button">Run C</button>
+          </div>
+          <p class="variant-note">
+            Makes the word budget the highest-priority contract, reserves a
+            safety margin, and converts it into exact sections, lines and a
+            maximum number of words per line.
+          </p>
+          <label for="system-c">System prompt</label>
+          <textarea id="system-c" class="prompt-editor" rows="18"></textarea>
+          <label for="user-c">Effective user prompt</label>
+          <textarea id="user-c" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-c">Not run</div>
+          <div class="metrics" id="metrics-c"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-c" type="button">Copy</button>
+            </div>
+            <pre id="processed-c">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-c"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant fidelity" data-variant="d">
+          <div class="variant-heading">
+            <div>
+              <p class="step">D · narrative fidelity</p>
+              <h2>One-pass story writer</h2>
+            </div>
+            <button class="small run-one" data-run="d" type="button">Run D</button>
+          </div>
+          <p class="variant-note">
+            Uses a generalized content hierarchy: immutable facts and tone
+            first, plain language and humor second, format and rhyme last.
+          </p>
+          <label for="system-d">System prompt</label>
+          <textarea id="system-d" class="prompt-editor" rows="18"></textarea>
+          <label for="user-d">Effective user prompt</label>
+          <textarea id="user-d" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-d">Not run</div>
+          <div class="metrics" id="metrics-d"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-d" type="button">Copy</button>
+            </div>
+            <pre id="processed-d">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-d"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant two-pass" data-variant="e">
+          <div class="variant-heading">
+            <div>
+              <p class="step">E · two pass</p>
+              <h2>Facts, then lyrics</h2>
+            </div>
+            <button class="small run-one" data-run="e" type="button">Run E</button>
+          </div>
+          <p class="variant-note">
+            Pass 1 extracts immutable story facts at temperature 0.25. Pass 2
+            writes from that fact sheet using the strict numeric contract.
+          </p>
+          <label for="facts-system-e">Pass 1 · fact-extraction system prompt</label>
+          <textarea id="facts-system-e" class="prompt-editor fact-prompt" rows="15"></textarea>
+          <label for="system-e">Pass 2 · lyric system prompt</label>
+          <textarea id="system-e" class="prompt-editor" rows="18"></textarea>
+          <label for="user-e">Pass 2 · effective user prompt</label>
+          <textarea id="user-e" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-e">Not run</div>
+          <div class="metrics" id="metrics-e"></div>
+          <div class="output-block fact-output">
+            <div class="output-heading">
+              <h3>Pass 1 · extracted facts</h3>
+              <button class="small copy" data-copy="facts-e" type="button">Copy</button>
+            </div>
+            <pre id="facts-e">Run E to inspect the extracted facts.</pre>
+          </div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Pass 2 · processed lyrics</h3>
+              <button class="small copy" data-copy="processed-e" type="button">Copy</button>
+            </div>
+            <pre id="processed-e">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-e"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant minimal" data-variant="f">
+          <div class="variant-heading">
+            <div>
+              <p class="step">F · minimal ablation</p>
+              <h2>Short fidelity prompt</h2>
+            </div>
+            <button class="small run-one" data-run="f" type="button">Run F</button>
+          </div>
+          <p class="variant-note">
+            Tests whether the model follows a short, neutral instruction better
+            than D's detailed hierarchy. Uses the exact same user prompt as D.
+          </p>
+          <label for="system-f">System prompt</label>
+          <textarea id="system-f" class="prompt-editor" rows="18"></textarea>
+          <label for="user-f">Effective user prompt</label>
+          <textarea id="user-f" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-f">Not run</div>
+          <div class="metrics" id="metrics-f"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-f" type="button">Copy</button>
+            </div>
+            <pre id="processed-f">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-f"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant editor" data-variant="g">
+          <div class="variant-heading">
+            <div>
+              <p class="step">G · story editor</p>
+              <h2>Evidence-led arc</h2>
+            </div>
+            <button class="small run-one" data-run="g" type="button">Run G</button>
+          </div>
+          <p class="variant-note">
+            Separates identity, event, emotional and optional facts, then builds
+            a scene-to-payoff arc. Uses the exact same user prompt as D.
+          </p>
+          <label for="system-g">System prompt</label>
+          <textarea id="system-g" class="prompt-editor" rows="18"></textarea>
+          <label for="user-g">Effective user prompt</label>
+          <textarea id="user-g" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-g">Not run</div>
+          <div class="metrics" id="metrics-g"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-g" type="button">Copy</button>
+            </div>
+            <pre id="processed-g">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-g"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant songcraft" data-variant="h">
+          <div class="variant-heading">
+            <div>
+              <p class="step">H · balanced songcraft</p>
+              <h2>Hook with a fidelity gate</h2>
+            </div>
+            <button class="small run-one" data-run="h" type="button">Run H</button>
+          </div>
+          <p class="variant-note">
+            Gives the model more songwriting freedom while locking point of
+            view, event, cause, emotional turn and hook to the source.
+          </p>
+          <label for="system-h">System prompt</label>
+          <textarea id="system-h" class="prompt-editor" rows="18"></textarea>
+          <label for="user-h">Effective user prompt</label>
+          <textarea id="user-h" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-h">Not run</div>
+          <div class="metrics" id="metrics-h"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-h" type="button">Copy</button>
+            </div>
+            <pre id="processed-h">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-h"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant compact-fidelity" data-variant="i">
+          <div class="variant-heading">
+            <div>
+              <p class="step">I · compact fidelity</p>
+              <h2>Small-model hybrid</h2>
+            </div>
+            <button class="small run-one" data-run="i" type="button">Run I</button>
+          </div>
+          <p class="variant-note">
+            Combines C's rigid output contract with G's agency and causality
+            guardrails, while removing the long planning hierarchy that can
+            overload smaller models. It is deliberately story-agnostic.
+          </p>
+          <label for="system-i">System prompt</label>
+          <textarea id="system-i" class="prompt-editor" rows="18"></textarea>
+          <label for="user-i">Effective user prompt</label>
+          <textarea id="user-i" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-i">Not run</div>
+          <div class="metrics" id="metrics-i"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-i" type="button">Copy</button>
+            </div>
+            <pre id="processed-i">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-i"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant rhymeai-dense" data-variant="j">
+          <div class="variant-heading">
+            <div>
+              <p class="step">J · RhymeAI fact-dense</p>
+              <h2>Six-line source map</h2>
+            </div>
+            <button class="small run-one" data-run="j" type="button">Run J</button>
+          </div>
+          <p class="variant-note">
+            Optimizes for RhymeAI's observed weakness: excellent structure but
+            missing source facts. Assigns each short line a factual job and
+            makes rhyme subordinate to agency, cause, and emotional meaning.
+          </p>
+          <label for="system-j">System prompt</label>
+          <textarea id="system-j" class="prompt-editor" rows="18"></textarea>
+          <label for="user-j">Effective user prompt</label>
+          <textarea id="user-j" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-j">Not run</div>
+          <div class="metrics" id="metrics-j"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-j" type="button">Copy</button>
+            </div>
+            <pre id="processed-j">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-j"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant rhymeai-minimal" data-variant="k">
+          <div class="variant-heading">
+            <div>
+              <p class="step">K · RhymeAI minimal</p>
+              <h2>Trust the fine-tune</h2>
+            </div>
+            <button class="small run-one" data-run="k" type="button">Run K</button>
+          </div>
+          <p class="variant-note">
+            Tests the opposite of J: a short system prompt and a light
+            verse/chorus contract modeled on production A, giving RhymeAI's
+            songwriting fine-tune more freedom.
+          </p>
+          <label for="system-k">System prompt</label>
+          <textarea id="system-k" class="prompt-editor" rows="10"></textarea>
+          <label for="user-k">Effective user prompt</label>
+          <textarea id="user-k" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-k">Not run</div>
+          <div class="metrics" id="metrics-k"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-k" type="button">Copy</button>
+            </div>
+            <pre id="processed-k">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-k"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant natural-language" data-variant="l">
+          <div class="variant-heading">
+            <div>
+              <p class="step">L · natural over rhyme</p>
+              <h2>Semantic rhyme gate</h2>
+            </div>
+            <button class="small run-one" data-run="l" type="button">Run L</button>
+          </div>
+          <p class="variant-note">
+            Uses K's lightweight user contract but explicitly permits rhyme
+            only when natural wording and exact meaning survive unchanged.
+            Accurate unrhymed lines are preferred over forced rhyme.
+          </p>
+          <label for="system-l">System prompt</label>
+          <textarea id="system-l" class="prompt-editor" rows="14"></textarea>
+          <label for="user-l">Effective user prompt</label>
+          <textarea id="user-l" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-l">Not run</div>
+          <div class="metrics" id="metrics-l"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-l" type="button">Copy</button>
+            </div>
+            <pre id="processed-l">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-l"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant exact-words" data-variant="m">
+          <div class="variant-heading">
+            <div>
+              <p class="step">M · exact words</p>
+              <h2>Verbatim wording contract</h2>
+            </div>
+            <button class="small run-one" data-run="m" type="button">Run M</button>
+          </div>
+          <p class="variant-note">
+            Extends L with a hard contract: any word or phrase explicitly
+            requested by the user must appear verbatim. The validator reports
+            missing quoted requirements instead of silently accepting them.
+          </p>
+          <label for="system-m">System prompt</label>
+          <textarea id="system-m" class="prompt-editor" rows="18"></textarea>
+          <label for="user-m">Effective user prompt</label>
+          <textarea id="user-m" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-m">Not run</div>
+          <div class="metrics" id="metrics-m"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-m" type="button">Copy</button>
+            </div>
+            <pre id="processed-m">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-m"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant rhymeai-long-form" data-variant="o">
+          <div class="variant-heading">
+            <div>
+              <p class="step">O · K loose long-form</p>
+              <h2>One minimal structural change</h2>
+            </div>
+            <button class="small run-one" data-run="o" type="button">Run O</button>
+          </div>
+          <p class="variant-note">
+            Uses K's exact system prompt and the same single-pass inference.
+            Only K's one structure sentence changes for durations over 45
+            seconds. It names additional sections without line counts, fill
+            targets, continuation calls, or other constraints.
+          </p>
+          <label for="system-o">System prompt — identical to K</label>
+          <textarea id="system-o" class="prompt-editor" rows="10"></textarea>
+          <label for="user-o">Effective user prompt — one sentence differs</label>
+          <textarea id="user-o" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-o">Not run</div>
+          <div class="metrics" id="metrics-o"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-o" type="button">Copy</button>
+            </div>
+            <pre id="processed-o">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-o"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant rhymeai-long-form natural-language" data-variant="p">
+          <div class="variant-heading">
+            <div>
+              <p class="step">P · L loose long-form</p>
+              <h2>L's quality gate, longer structure</h2>
+            </div>
+            <button class="small run-one" data-run="p" type="button">Run P</button>
+          </div>
+          <p class="variant-note">
+            Uses L's natural-language system prompt with O's exact long-form
+            user prompt. This isolates whether L's safeguards against forced
+            rhyme, malformed wording, and changed facts preserve quality as
+            the model writes more sections.
+          </p>
+          <label for="system-p">System prompt — identical to L</label>
+          <textarea id="system-p" class="prompt-editor" rows="14"></textarea>
+          <label for="user-p">Effective user prompt — identical to O</label>
+          <textarea id="user-p" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-p">Not run</div>
+          <div class="metrics" id="metrics-p"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-p" type="button">Copy</button>
+            </div>
+            <pre id="processed-p">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-p"></pre>
+          </details>
+        </article>
+
+        <article class="panel variant rhymeai-long-form literal-sense" data-variant="q">
+          <div class="variant-heading">
+            <div>
+              <p class="step">Q · literal long-form</p>
+              <h2>Meaning first, with overrun headroom</h2>
+            </div>
+            <button class="small run-one" data-run="q" type="button">Run Q</button>
+          </div>
+          <p class="variant-note">
+            Requires every phrase to have a literal referent in the source and
+            rejects invented rhyme filler. For durations over 45 seconds, the
+            model sees a word ceiling 20% below the real ACE limit, leaving
+            headroom for RhymeAI's usual counting overrun. Metrics show both
+            generated and retained word counts.
+          </p>
+          <label for="system-q">System prompt — literal-sense gate</label>
+          <textarea id="system-q" class="prompt-editor" rows="16"></textarea>
+          <label for="user-q">Effective user prompt — safety-adjusted ceiling</label>
+          <textarea id="user-q" class="prompt-editor user-prompt" rows="11"></textarea>
+          <div class="result-status" id="status-q">Not run</div>
+          <div class="metrics" id="metrics-q"></div>
+          <div class="output-block">
+            <div class="output-heading">
+              <h3>Processed lyrics</h3>
+              <button class="small copy" data-copy="processed-q" type="button">Copy</button>
+            </div>
+            <pre id="processed-q">Run the prompt to see output.</pre>
+          </div>
+          <details>
+            <summary>Raw model output</summary>
+            <pre id="raw-q"></pre>
+          </details>
+        </article>
+
+      </section>
+
+      <section class="panel findings">
+        <p class="step">What this isolates</p>
+        <h2>Read the comparison carefully</h2>
+        <ul>
+          <li>All variants in one run use the selected model and the same lyric seed.</li>
+          <li>D, F, G, H, I and J share one strict user prompt. K is the locked lightweight control; O changes only its structure sentence, P adds L's system prompt, and Q adds a literal-sense gate plus counting headroom.</li>
+          <li>The preset briefs cover awkward humor, grief, causality, mundane detail, mixed emotion and place-specific celebration.</li>
+          <li>Processed output applies the library's existing cleanup and word-budget compaction.</li>
+          <li>Raw output reveals whether the prompt or post-processing caused a bad result.</li>
+          <li>Variant E exposes pass 1 separately, so fact-extraction errors are not confused with songwriting errors.</li>
+          <li>Run several seeds before adopting a prompt; one lucky generation is not a quality result.</li>
+        </ul>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

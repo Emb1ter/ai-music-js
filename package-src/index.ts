@@ -32,6 +32,12 @@ import {
   recommendDurationForLyrics,
 } from "../lib/lyrics";
 import {
+  DEFAULT_LYRICS_MODEL_PROFILE_ID,
+  resolveLyricsModel,
+  type LyricsModelSelection,
+  type ResolvedLyricsModel,
+} from "../lib/lyrics-models";
+import {
   DEFAULT_PLANNER_MODEL,
   DEFAULT_PLANNER_MODEL_REVISION,
   type PlannerMetadata,
@@ -105,6 +111,25 @@ export type {
   RecommendLyricDurationOptions,
 } from "../lib/lyrics";
 export {
+  BUILT_IN_LYRICS_MODELS,
+  DEFAULT_LYRICS_MODEL_PROFILE_ID,
+  QWEN35_2B_MODEL,
+  QWEN35_2B_MODEL_REVISION,
+  RHYMEAI_GEMMA4_E2B_MODEL,
+  RHYMEAI_GEMMA4_E2B_MODEL_BASE_URL,
+  RHYMEAI_GEMMA4_E2B_MODEL_REVISION,
+  RHYMEAI_GEMMA4_E4B_V3_MODEL,
+  resolveLyricsModel,
+} from "../lib/lyrics-models";
+export type {
+  BuiltInLyricsModelId,
+  LyricsModelConfig,
+  LyricsModelDtype,
+  LyricsModelFamily,
+  LyricsModelSelection,
+  ResolvedLyricsModel,
+} from "../lib/lyrics-models";
+export {
   AUDIO_CODEBOOK_SIZE,
   AUDIO_CODE_TOKEN_END,
   AUDIO_CODE_TOKEN_START,
@@ -134,6 +159,12 @@ export {
   LYRICS_MODEL_DOWNLOAD_BYTES,
   PLANNER_MODEL_ASSETS,
   PLANNER_MODEL_DOWNLOAD_BYTES,
+  QWEN35_2B_MODEL_ASSETS,
+  QWEN35_2B_MODEL_DOWNLOAD_BYTES,
+  RHYMEAI_GEMMA4_E2B_MODEL_ASSETS,
+  RHYMEAI_GEMMA4_E2B_MODEL_DOWNLOAD_BYTES,
+  RHYMEAI_GEMMA4_E4B_V3_MODEL_ASSETS,
+  RHYMEAI_GEMMA4_E4B_V3_MODEL_DOWNLOAD_BYTES,
 } from "../lib/language-model-manifest";
 export type {
   DcwMode,
@@ -220,9 +251,19 @@ export type AceStepWebGpuOptions = {
   workerFactory?: (url: URL, options: WorkerOptions) => Worker;
   /** Integrate the Qwen language stage with a custom Worker loader. */
   languageWorkerFactory?: (url: URL, options: WorkerOptions) => Worker;
-  /** Qwen3.5 Transformers.js model repository override. */
+  /**
+   * Built-in lyric-model ID or a custom Transformers.js ONNX model profile.
+   * Defaults to `qwen3.5-0.8b-q4`.
+   */
+  lyricsModel?: LyricsModelSelection;
+  /**
+   * Application-owned lyric-writer system prompt. Built-in model profiles do
+   * not select creative prompts; see the README for tested starting points.
+   */
+  lyricsSystemPrompt?: string;
+  /** @deprecated Use lyricsModel with a custom Qwen3.5 profile. */
   lyricsModelId?: string;
-  /** Immutable Hugging Face revision used for the lyric model. */
+  /** @deprecated Use lyricsModel with a custom Qwen3.5 profile. */
   lyricsModelRevision?: string;
   /** Exact ACE-Step 5 Hz 4B planner repository override. */
   plannerModelId?: string;
@@ -253,8 +294,14 @@ export type GenerateOptions = {
   plannerQuality?: PlannerQuality;
   /** Omit or leave empty for instrumental generation. */
   lyrics?: string;
-  /** Generate lyrics from the prompt with browser-local Qwen3.5 first. */
+  /** Generate lyrics from the prompt with the selected browser-local model first. */
   writeLyrics?: boolean;
+  /** Lyric-writer brief when it should differ from the ACE music caption. */
+  lyricsPrompt?: string;
+  /** Per-generation override for the application-owned lyric system prompt. */
+  lyricsSystemPrompt?: string;
+  /** Per-generation override for the constructor's lyric-model selection. */
+  lyricsModel?: LyricsModelSelection;
   /**
    * Generate ACE 5 Hz semantic codes before diffusion. Defaults to true and
    * is the browser path closest to the official backend.
@@ -289,6 +336,10 @@ export type GenerateOptions = {
 
 export type WriteLyricsOptions = {
   prompt: string;
+  /** Per-call override for the application-owned lyric system prompt. */
+  systemPrompt?: string;
+  /** Per-call override for the constructor's lyric-model selection. */
+  lyricsModel?: LyricsModelSelection;
   seed?: number;
   durationSeconds?: number;
   maxWords?: number;
@@ -716,8 +767,8 @@ export class AceStepWebGpu {
     url: URL,
     options: WorkerOptions,
   ) => Worker;
-  private readonly lyricsModelId: string;
-  private readonly lyricsModelRevision: string;
+  private readonly lyricsModel: ResolvedLyricsModel;
+  private readonly lyricsSystemPrompt?: string;
   private readonly plannerModelId: string;
   private readonly plannerModelRevision: string;
   private readonly highQualityPlannerModelId: string;
@@ -744,11 +795,32 @@ export class AceStepWebGpu {
       options.languageWorkerFactory ??
       options.workerFactory ??
       ((url, workerOptions) => new Worker(url, workerOptions));
-    this.lyricsModelId =
-      options.lyricsModelId?.trim() || DEFAULT_LYRICS_MODEL;
-    this.lyricsModelRevision =
-      options.lyricsModelRevision?.trim() ||
-      DEFAULT_LYRICS_MODEL_REVISION;
+    if (
+      options.lyricsModel !== undefined &&
+      (options.lyricsModelId !== undefined ||
+        options.lyricsModelRevision !== undefined)
+    ) {
+      throw new TypeError(
+        "Use either lyricsModel or the deprecated lyricsModelId/lyricsModelRevision options, not both.",
+      );
+    }
+    const configuredLyricsModel = resolveLyricsModel(
+      options.lyricsModel ??
+        (options.lyricsModelId
+          ? {
+              family: "qwen3.5",
+              modelId: options.lyricsModelId,
+              revision:
+                options.lyricsModelRevision ??
+                DEFAULT_LYRICS_MODEL_REVISION,
+              dtype: "q4",
+            }
+          : DEFAULT_LYRICS_MODEL_PROFILE_ID),
+    );
+    this.lyricsModel = this.resolveLyricsModelUrls(
+      configuredLyricsModel,
+    );
+    this.lyricsSystemPrompt = options.lyricsSystemPrompt?.trim() || undefined;
     this.plannerModelId =
       options.plannerModelId?.trim() || DEFAULT_PLANNER_MODEL;
     this.plannerModelRevision =
@@ -793,6 +865,25 @@ export class AceStepWebGpu {
   /** Latest normalized progress value emitted by the active operation. */
   get progress() {
     return this.operationProgress;
+  }
+
+  private resolveLyricsModelUrls(
+    model: ResolvedLyricsModel,
+  ): ResolvedLyricsModel {
+    return model.modelBaseUrl
+      ? {
+          ...model,
+          modelBaseUrl: directoryUrl(model.modelBaseUrl).href,
+        }
+      : model;
+  }
+
+  private selectedLyricsModel(
+    selection?: LyricsModelSelection,
+  ): ResolvedLyricsModel {
+    return selection === undefined
+      ? this.lyricsModel
+      : this.resolveLyricsModelUrls(resolveLyricsModel(selection));
   }
 
   subscribe(listener: AceStepUpdateListener) {
@@ -1015,15 +1106,27 @@ export class AceStepWebGpu {
       );
     }
     await this.requestPersistentStorage();
+    const lyricsModel = this.selectedLyricsModel(
+      options.lyricsModel,
+    );
+    const systemPrompt =
+      options.systemPrompt?.trim() ||
+      this.lyricsSystemPrompt ||
+      lyricsModel.systemPrompt?.trim();
+    if (!systemPrompt) {
+      throw new TypeError(
+        "A lyric system prompt is required. Pass systemPrompt to writeLyrics(), lyricsSystemPrompt to generate(), or configure lyricsSystemPrompt on AceStepWebGpu. Recommended model prompts are documented in the README.",
+      );
+    }
     return this.runWorker<WriteLyricsResult>(
       {
         type: "write-lyrics",
         prompt,
+        systemPrompt,
         seed,
         durationSeconds,
         maxWords,
-        modelId: this.lyricsModelId,
-        revision: this.lyricsModelRevision,
+        model: lyricsModel,
       },
       (update) =>
         update.type === "lyrics-complete"
@@ -1283,6 +1386,12 @@ export class AceStepWebGpu {
         "Choose either supplied lyrics or writeLyrics, not both.",
       );
     }
+    if (!options.writeLyrics && options.lyricsPrompt?.trim()) {
+      throw new TypeError("lyricsPrompt requires writeLyrics: true.");
+    }
+    if (!options.writeLyrics && options.lyricsSystemPrompt?.trim()) {
+      throw new TypeError("lyricsSystemPrompt requires writeLyrics: true.");
+    }
     if (options.writeLyrics && sampler === "euler-sde") {
       throw new RangeError(
         "Euler SDE is currently limited to instrumental generation. Use Euler or Heun when Qwen writes vocals.",
@@ -1292,10 +1401,12 @@ export class AceStepWebGpu {
       const lyricsStartedAt = performance.now();
       const written = await this.writeLyricsInternal(
         {
-          prompt,
+          prompt: options.lyricsPrompt?.trim() || prompt,
+          systemPrompt: options.lyricsSystemPrompt,
           seed: seed % 2_147_483_648,
           durationSeconds,
           maxWords: options.maxLyricWords,
+          lyricsModel: options.lyricsModel,
           signal: options.signal,
         },
         reporter,

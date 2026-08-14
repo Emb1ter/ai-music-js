@@ -3,22 +3,6 @@ export const DEFAULT_LYRICS_MODEL =
 export const DEFAULT_LYRICS_MODEL_REVISION =
   "1e45daba048899e7f771657ada617ec49350aa91";
 
-export const LYRICS_SYSTEM_PROMPT = `You write original, coherent, singable song lyrics.
-Follow the requested language, singer, story, mood, and structure.
-Treat the requested song duration and maximum word count as hard limits.
-Lines identified as exact requirements are immutable: copy every one verbatim.
-Write new lyrics around those required lines instead of explaining the request.
-Stay inside the supplied story. Do not invent unrelated people, locations,
-weapons, violence, threats, crimes, bodily functions, sexual details, props,
-or actions that the user did not request.
-Anything marked "do not mention" must be completely absent. Do not mention a
-forbidden subject merely to negate it.
-Preserve the requested emotional direction; never turn a funny or celebratory
-brief into a sad, reflective, romantic, or threatening song.
-Return lyrics only, using concise section tags such as [Verse], [Chorus], [Refrain], [Bridge], and [Outro].
-Never repeat a verse. Repeat a chorus at most once. Stop after the outro.
-Do not return Markdown fences, a title, commentary, analysis, or production instructions.`;
-
 const SECTION_TAG = /^\[[^\]\n]{1,30}\]$/;
 
 export const BACKEND_VOCAL_MIN_WORDS = 40;
@@ -145,7 +129,11 @@ export const assessLyricDuration = (
 
 export const cleanLyrics = (value: string) => {
   let lyrics = value.trim();
-  lyrics = lyrics.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  // Qwen thinking is disabled in the chat template, but also tolerate a
+  // complete or token-limit-truncated reasoning block in model output.
+  lyrics = lyrics
+    .replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, "")
+    .trim();
   if (lyrics.startsWith("```") && lyrics.endsWith("```")) {
     lyrics = lyrics
       .replace(/^```(?:text|markdown)?\s*/i, "")
@@ -173,9 +161,6 @@ export const cleanLyrics = (value: string) => {
 };
 
 export const compactLyrics = (lyrics: string, maxWords: number) => {
-  const lineLimit = maxWords <= 180 ? 4 : maxWords <= 270 ? 6 : 8;
-  let sectionCount = 0;
-  let linesInSection = 0;
   let wordCount = 0;
   const compacted: string[] = [];
   for (const rawLine of lyrics.split(/\r?\n/)) {
@@ -187,20 +172,15 @@ export const compactLyrics = (lyrics: string, maxWords: number) => {
       continue;
     }
     if (SECTION_TAG.test(line)) {
-      sectionCount += 1;
-      if (sectionCount > 6) break;
       while (compacted.length && !compacted.at(-1)) {
         compacted.pop();
       }
       compacted.push(...(compacted.length ? ["", line] : [line]));
-      linesInSection = 0;
       continue;
     }
-    if (linesInSection >= lineLimit) continue;
     const words = line.split(/\s+/).length;
     if (wordCount + words > maxWords) break;
     compacted.push(line);
-    linesInSection += 1;
     wordCount += words;
   }
   while (compacted.length && !compacted.at(-1)) compacted.pop();

@@ -68,6 +68,45 @@ from pinned Hugging Face revisions.
 - Use: optional browser-local lyric writing
 - License text: [`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt)
 
+### Qwen3.5 2B
+
+- Browser model:
+  <https://huggingface.co/onnx-community/Qwen3.5-2B-ONNX-OPT>
+- Original family: <https://huggingface.co/Qwen>
+- License: Apache License 2.0
+- Use: optional browser-local lyric writing
+- License text: [`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt)
+
+### RhymeAI Gemma 4 E2B
+
+- RhymeAI fine-tune and F16 LoRA:
+  <https://huggingface.co/Shayde182/rhymeai-gemma-4-gguf>
+- Gemma 4 E2B instruction base:
+  <https://huggingface.co/google/gemma-4-E2B-it>
+- ONNX base graph:
+  <https://huggingface.co/onnx-community/gemma-4-E2B-it-ONNX>
+- License: Apache License 2.0
+- Use: optional browser-local lyric writing
+- Modification: the RhymeAI E2B F16 LoRA was merged into the text-only Q4F16
+  ONNX decoder and all affected matrices were requantized.
+- License text: [`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt)
+
+### RhymeAI Gemma 4 E4B v3
+
+- Browser ONNX model:
+  <https://huggingface.co/emb1ter/RhymeAI-Gemma-4-E4B-v3-ONNX-WebGPU>
+- RhymeAI fine-tune and F16 LoRA:
+  <https://huggingface.co/Shayde182/rhymeai-gemma-4-gguf>
+- Gemma 4 E4B instruction base:
+  <https://huggingface.co/google/gemma-4-E4B-it>
+- ONNX base graph:
+  <https://huggingface.co/onnx-community/gemma-4-E4B-it-ONNX>
+- License: Apache License 2.0
+- Use: optional larger browser-local lyric writing
+- Modification: the RhymeAI E4B v3 F16 LoRA was merged into the text-only
+  Q4F16 ONNX decoder and all affected matrices were requantized.
+- License text: [`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt)
+
 ### ACE-Step v1.5 ONNX conversion
 
 - Model repository:
