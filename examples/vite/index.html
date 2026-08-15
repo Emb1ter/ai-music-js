@@ -33,9 +33,16 @@
                 <option value="instrumental">Instrumental</option>
                 <option value="vocals">Vocals with my lyrics</option>
                 <option value="ai-vocals">
-                  Vocals · Qwen3.5 writes lyrics
+                  Vocals · AI writes lyrics
                 </option>
               </select>
+            </label>
+            <label>
+              <span>Lyric model</span>
+              <select id="lyrics-model"></select>
+              <small>
+                Runs locally with Transformers.js and WebGPU.
+              </small>
             </label>
             <label>
               <span>Audio precision</span>
@@ -208,7 +215,8 @@
             uses 8.00 GB of INT8 assets. Both decode with the validated FP32
             WebGPU VAE. Semantic high quality adds a 4.63 GB INT8-weight /
             FP32-compute planner.
-            AI-written lyrics add a pinned 0.49 GB Qwen3.5 model. Planner
+            AI-written lyrics can use the pinned 0.49 GB Qwen3.5 model or
+            the 4.92 GB RhymeAI Gemma E4B v3 model. Planner and lyric-model
             resources are released before audio inference.
           </p>
         </div>

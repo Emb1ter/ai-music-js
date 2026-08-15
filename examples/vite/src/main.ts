@@ -1,18 +1,58 @@
 import {
   AceStepWebGpu,
   AceStepWebGpuError,
+  BUILT_IN_LYRICS_MODELS,
   DEFAULT_INSTRUMENTAL_PROMPT,
   DEFAULT_VOCAL_PROMPT,
   assessLyricDuration,
   defaultMaxLyricWords,
   type CacheInventory,
+  type BuiltInLyricsModelId,
   type PlannerProfileReport,
   type WorkerUpdate,
 } from "ai-music-js";
 import "./styles.css";
 
+// Prompt policy belongs to the application, not the library runtime. Qwen3.5
+// uses the evaluation's I prompt; RhymeAI uses the evaluation's P prompt.
+const QWEN_I_LYRICS_SYSTEM_PROMPT = `You write short, singable lyrics from the user's story.
+
+Accuracy comes first. Keep:
+- who does each action;
+- what happens;
+- why it happens;
+- where it happens;
+- the point of view, feelings, and requested tone.
+
+Do not replace, reverse, soften, or invent these facts. Keep names and places unchanged. Keep unusual, embarrassing, explicit, or ordinary details when the user supplies them. If space is tight, remove decoration before changing the main event, its cause, or its emotional meaning.
+
+Use the requested sections as a simple story:
+- verse: establish the real scene, action, and cause;
+- chorus: express the real feeling or payoff through one short hook.
+
+Use clear, grammatical, ordinary words. Each line must add a fact or strengthen the hook. Rhyme is optional; never distort meaning for rhyme. Avoid vague filler and invented backstory.
+
+Follow the exact language, section order, line counts, per-line limit, and total word limit. Return only the requested section tags and lyric lines. Add nothing before or after.`;
+
+const RHYMEAI_P_LYRICS_SYSTEM_PROMPT = `Write short, singable lyrics that preserve the user's real story.
+
+Natural meaning is mandatory. Rhyme is optional. Write each line in the clearest factual wording first. Use an end rhyme only when that wording already sounds natural and keeps the exact meaning.
+
+Never invent or replace a person, place, object, action, cause, feeling, or image merely to rhyme. Never use a malformed phrase, unnatural word order, vague metaphor, or generic conclusion merely because its final sound matches another line. An accurate unrhymed line is always better than an awkward rhymed line.
+
+Keep the real event and its cause in the verse. Give the chorus a short emotional payoff grounded in the source. Use direct, grammatical, ordinary language.
+
+Follow the requested language and word limit. Return only lyrics with bracketed section tags.`;
+
+const demoLyricsSystemPrompt = (modelId: BuiltInLyricsModelId) =>
+  modelId.startsWith("rhymeai-")
+    ? RHYMEAI_P_LYRICS_SYSTEM_PROMPT
+    : QWEN_I_LYRICS_SYSTEM_PROMPT;
+
 const prompt = document.querySelector<HTMLTextAreaElement>("#prompt");
 const mode = document.querySelector<HTMLSelectElement>("#mode");
+const lyricsModel =
+  document.querySelector<HTMLSelectElement>("#lyrics-model");
 const audioQuality =
   document.querySelector<HTMLSelectElement>("#audio-quality");
 const plannerQuality =
@@ -74,6 +114,7 @@ const cacheList = document.querySelector<HTMLElement>("#cache-list");
 if (
   !prompt ||
   !mode ||
+  !lyricsModel ||
   !audioQuality ||
   !plannerQuality ||
   !lyricsPanel ||
@@ -119,6 +160,12 @@ if (
 }
 
 prompt.value = DEFAULT_INSTRUMENTAL_PROMPT;
+for (const model of Object.values(BUILT_IN_LYRICS_MODELS)) {
+  const option = document.createElement("option");
+  option.value = model.id;
+  option.textContent = model.label;
+  lyricsModel.append(option);
+}
 
 let audioUrls: string[] = [];
 let appBusy = false;
@@ -348,11 +395,16 @@ const updateModeControls = () => {
   lyricsPanel.hidden = !vocalsEnabled;
   lyrics.disabled = !vocalsEnabled || aiLyrics || appBusy;
   vocalLanguage.disabled = !vocalsEnabled || appBusy;
+  lyricsModel.disabled = !aiLyrics || appBusy;
+  const selectedLyricsModel =
+    BUILT_IN_LYRICS_MODELS[
+      lyricsModel.value as BuiltInLyricsModelId
+    ];
   lyricsGuidance.textContent = aiLyrics
-    ? "Qwen3.5 writes this field locally before ACE-Step starts. The model is about 0.49 GB."
+    ? `${selectedLyricsModel.label} writes this field locally before ACE-Step starts.`
     : "These lyrics are passed directly to ACE-Step.";
   lyrics.placeholder = aiLyrics
-    ? "Qwen3.5-generated lyrics will appear here."
+    ? "AI-generated lyrics will appear here."
     : "[Verse]\nWrite your first verse here\n\n[Chorus]\nWrite a memorable chorus";
   const sdeOption = sampler.querySelector<HTMLOptionElement>(
     'option[value="euler-sde"]',
@@ -610,6 +662,7 @@ const runtime = new AceStepWebGpu({
 });
 
 mode.addEventListener("change", applyModeDefaults);
+lyricsModel.addEventListener("change", updateModeControls);
 lyrics.addEventListener("input", updateLyricFit);
 duration.addEventListener("change", updateLyricFit);
 plannerQuality.addEventListener("change", updateLyricFit);
@@ -684,6 +737,14 @@ generate.addEventListener("click", async () => {
         | "high-quality",
       lyrics: lyricsValue,
       writeLyrics: mode.value === "ai-vocals",
+      lyricsSystemPrompt:
+        mode.value === "ai-vocals"
+          ? demoLyricsSystemPrompt(
+              lyricsModel.value as BuiltInLyricsModelId,
+            )
+          : undefined,
+      lyricsModel:
+        lyricsModel.value as BuiltInLyricsModelId,
       vocalLanguage: vocalLanguage.value,
       durationSeconds: requestedDurationSeconds(),
       autoDuration: duration.value === "auto",

@@ -12,6 +12,9 @@ runtime from immutable Hugging Face revisions.
 | `audioQuality: "high"` | 8,004,092,572 bytes | INT8 XL condition encoder and DiT plus the same support models and FP32 VAE |
 | `plannerQuality: "high-quality"` | +4,633,150,982 bytes | INT8-weight/FP32-compute ACE 5 Hz planner and FP32 WebGPU head |
 | `writeLyrics: true` | +489,166,749 bytes | Qwen3.5 0.8B INT4 lyric writer |
+| `lyricsModel: "qwen3.5-2b-q4f16"` | +1,402,858,517 bytes | Qwen3.5 2B Q4F16 lyric writer |
+| `lyricsModel: "rhymeai-gemma4-e2b-q4f16"` | +3,130,549,798 bytes | Same-origin converted RhymeAI Gemma 4 E2B Q4F16 lyric writer |
+| `lyricsModel: "rhymeai-gemma4-e4b-v3-q4f16"` | +4,924,962,759 bytes | RhymeAI Gemma 4 E4B v3 Q4F16 lyric writer |
 
 The normal high-quality combination is therefore 10,259,645,211 bytes with
 standard audio or 12,637,243,554 bytes with high-precision audio. Browser quota
@@ -28,6 +31,16 @@ and temporary session allocations require additional headroom.
 - Qwen3.5 lyric writer:
   `onnx-community/Qwen3.5-0.8B-Text-ONNX` at
   `1e45daba048899e7f771657ada617ec49350aa91`
+- Qwen3.5 2B lyric writer:
+  `onnx-community/Qwen3.5-2B-ONNX-OPT` at
+  `2ea7886f48b926aca97de8b0e041ffca7e3ebaa9`
+- RhymeAI Gemma 4 E2B source and adapter:
+  `Shayde182/rhymeai-gemma-4-gguf` at
+  `27492c6696f2f868bbbe3aeafb633009ef932598`; the converted ONNX tree is
+  served by the application from `/local-lyrics-models/`
+- RhymeAI Gemma 4 E4B v3 lyric writer:
+  `emb1ter/RhymeAI-Gemma-4-E4B-v3-ONNX-WebGPU` at
+  `12495b6e18df4ae1738e5bb9415d610a7a9a3d92`
 - Shared experimental ONNX assets:
   `shreyask/ACE-Step-v1.5-ONNX` at
   `bdabfb5684fd70fcc76f98cbb51bb9ebc47ee342`
@@ -72,6 +85,9 @@ console.log(inventory.usageBytes, inventory.quotaBytes, inventory.availableBytes
 
 await runtime.removeCachedModel("music-planner-high-quality");
 await runtime.removeCachedModel("lyrics-writer");
+await runtime.removeCachedModel("lyrics-writer-qwen-2b");
+await runtime.removeCachedModel("lyrics-writer-rhymeai-e2b");
+await runtime.removeCachedModel("lyrics-writer-rhymeai-e4b-v3");
 await runtime.removeCachedModel("dit");
 await runtime.clearCache();
 ```

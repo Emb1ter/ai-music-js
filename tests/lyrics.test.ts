@@ -18,6 +18,10 @@ describe("browser lyric post-processing", () => {
     ).toBe("[Verse]\nLine one\n[Chorus]\nLine two");
   });
 
+  it("removes a truncated Qwen thinking block", () => {
+    expect(cleanLyrics("<think>unfinished internal reasoning")).toBe("");
+  });
+
   it("compacts sung words without charging section tags to the budget", () => {
     const result = compactLyrics(
       "[Verse]\none two three\nfour five six\nseven eight nine\n\n[Chorus]\nten eleven twelve",
@@ -26,6 +30,31 @@ describe("browser lyric post-processing", () => {
     expect(result).toBe(
       "[Verse]\none two three\nfour five six\nseven eight nine\n\n[Chorus]",
     );
+  });
+
+  it("does not silently discard section lines when the lyrics fit", () => {
+    const lyrics = `[Verse]
+one two
+three four
+five six
+seven eight
+nine ten
+
+[Chorus]
+eleven twelve`;
+
+    expect(compactLyrics(lyrics, 20)).toBe(lyrics);
+    expect(countLyricWords(compactLyrics(lyrics, 20))).toBe(12);
+  });
+
+  it("does not silently discard later sections when the lyrics fit", () => {
+    const lyrics = Array.from(
+      { length: 7 },
+      (_, index) => `[Section ${index + 1}]\nword${index + 1}`,
+    ).join("\n\n");
+
+    expect(compactLyrics(lyrics, 20)).toBe(lyrics);
+    expect(countLyricWords(compactLyrics(lyrics, 20))).toBe(7);
   });
 
   it("detects unusably short and repeated drafts deterministically", () => {

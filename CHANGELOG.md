@@ -2,6 +2,34 @@
 
 All notable changes to `ai-music-js` are documented here.
 
+## 0.5.0 — 2026-08-14
+
+### Added
+
+- Four selectable lyric-writing profiles: Qwen3.5 0.8B, Qwen3.5 2B,
+  same-origin RhymeAI Gemma 4 E2B, and the published RhymeAI Gemma 4 E4B v3.
+- Typed `lyricsModel` selection on the runtime, `generate()`, and
+  `writeLyrics()` APIs.
+- Custom Hugging Face or self-hosted Transformers.js causal-LM profiles with
+  explicit architecture family, dtype, revision, base URL, and optional
+  system prompt.
+- Main-demo lyric-model selector and cache-manager inventory for both bundled
+  lyric-model choices.
+- Separate `lyricsPrompt` and application-owned `lyricsSystemPrompt` inputs,
+  allowing the lyric-writing brief to differ from the ACE music caption.
+- An isolated browser lyric-evaluation lab with multi-model, multi-prompt batch
+  runs and exportable results.
+- Local tokenizer cache priming for self-hosted lyric models.
+
+### Changed
+
+- The language Worker now dispatches Qwen3.5, Gemma 4, or an
+  `AutoModelForCausalLM`-supported custom architecture instead of hardcoding
+  Qwen3.5.
+- Built-in lyric-model profiles no longer impose a creative system prompt.
+  Applications choose their policy explicitly; the README documents the
+  evaluated I prompt for Qwen3.5 and P prompt for RhymeAI.
+
 ## 0.4.0 — 2026-08-04
 
 This is the first npm release containing the complete browser-local vocal and

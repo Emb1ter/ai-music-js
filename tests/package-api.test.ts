@@ -12,6 +12,7 @@ import {
   HIGH_PRECISION_MODEL_FILES,
   LOCAL_MODEL_FILES,
   PIPELINE_BUILD,
+  RHYMEAI_GEMMA4_E4B_V3_MODEL,
   FULL_MODEL_DOWNLOAD_BYTES,
   TOTAL_DOWNLOAD_BYTES,
   getRequiredAssets,
@@ -23,6 +24,9 @@ import type {
   WorkerRequest,
   WorkerUpdate,
 } from "../lib/worker-protocol";
+
+const TEST_LYRICS_SYSTEM_PROMPT =
+  "Write faithful lyrics and return only section tags and lyric lines.";
 
 const cacheInventory: CacheInventory = {
   origin: "https://app.example",
@@ -83,8 +87,8 @@ class FakeWorker {
           type: "lyrics-complete",
           lyrics:
             "[Verse]\nNeon wakes the street\nWe move with the beat\n\n[Chorus]\nSing into the light\nKeep the fire bright",
-          model: request.modelId,
-          revision: request.revision,
+          model: request.model.modelId,
+          revision: request.model.revision,
           seed: request.seed,
           durationSeconds: request.durationSeconds,
           maxWords: request.maxWords,
@@ -483,6 +487,7 @@ describe("published browser API", () => {
 
     const result = await runtime.writeLyrics({
       prompt: "An upbeat neon synth-pop anthem in English",
+      systemPrompt: TEST_LYRICS_SYSTEM_PROMPT,
       seed: 17,
       durationSeconds: 30,
       maxWords: 66,
@@ -493,13 +498,72 @@ describe("published browser API", () => {
     expect(fakeWorker.requests[0]).toEqual({
       type: "write-lyrics",
       prompt: "An upbeat neon synth-pop anthem in English",
+      systemPrompt: TEST_LYRICS_SYSTEM_PROMPT,
       seed: 17,
       durationSeconds: 30,
       maxWords: 66,
-      modelId: DEFAULT_LYRICS_MODEL,
-      revision: DEFAULT_LYRICS_MODEL_REVISION,
+      model: {
+        id: "qwen3.5-0.8b-q4",
+        label: "Qwen3.5 0.8B · Q4 · 0.49 GB",
+        family: "qwen3.5",
+        modelId: DEFAULT_LYRICS_MODEL,
+        revision: DEFAULT_LYRICS_MODEL_REVISION,
+        dtype: "q4",
+      },
     });
     expect(fakeWorker.terminated).toBe(true);
+  });
+
+  it("selects a built-in or custom Transformers.js lyric model", async () => {
+    const builtInWorker = new FakeWorker();
+    const runtime = new AceStepWebGpu({
+      languageWorkerFactory: () =>
+        builtInWorker as unknown as Worker,
+    });
+
+    await runtime.writeLyrics({
+      prompt: "A concise browser-model test song",
+      systemPrompt: TEST_LYRICS_SYSTEM_PROMPT,
+      lyricsModel: "rhymeai-gemma4-e4b-v3-q4f16",
+    });
+    expect(builtInWorker.requests[0]).toMatchObject({
+      type: "write-lyrics",
+      model: {
+        family: "gemma4",
+        modelId: RHYMEAI_GEMMA4_E4B_V3_MODEL,
+        dtype: "q4f16",
+      },
+    });
+
+    const customWorker = new FakeWorker();
+    const customRuntime = new AceStepWebGpu({
+      lyricsSystemPrompt: TEST_LYRICS_SYSTEM_PROMPT,
+      lyricsModel: {
+        id: "my-lyrics",
+        label: "My lyrics model",
+        family: "auto",
+        modelId: "models/songwriter",
+        revision: "local",
+        dtype: "fp16",
+        modelBaseUrl: "https://models.example/assets",
+      },
+      languageWorkerFactory: () =>
+        customWorker as unknown as Worker,
+    });
+    await customRuntime.writeLyrics({
+      prompt: "Use a self-hosted model",
+    });
+    expect(customWorker.requests[0]).toMatchObject({
+      type: "write-lyrics",
+      model: {
+        id: "my-lyrics",
+        family: "auto",
+        modelId: "models/songwriter",
+        revision: "local",
+        dtype: "fp16",
+        modelBaseUrl: "https://models.example/assets/",
+      },
+    });
   });
 
   it("runs Qwen, the ACE planner, and audio inference in isolated Workers", async () => {
@@ -517,6 +581,7 @@ describe("published browser API", () => {
       prompt: "upbeat neon synth-pop with a clear lead singer",
       plannerQuality: "high-quality",
       writeLyrics: true,
+      lyricsSystemPrompt: TEST_LYRICS_SYSTEM_PROMPT,
       vocalLanguage: "en",
       seed: 33,
       durationSeconds: 30,
@@ -541,6 +606,18 @@ describe("published browser API", () => {
     });
     expect(result.instrumental).toBe(false);
     expect(result.lyrics).toContain("[Chorus]");
+  });
+
+  it("requires applications to provide a lyric-writing system prompt", async () => {
+    const runtime = new AceStepWebGpu({
+      languageWorkerFactory: () =>
+        new FakeWorker() as unknown as Worker,
+    });
+
+    await expect(
+      runtime.writeLyrics({ prompt: "A lyric brief without a writing policy" }),
+    ).rejects.toThrow(/lyric system prompt is required/i);
+    runtime.dispose();
   });
 
   it("selects the INT8-weight / FP32-compute planner explicitly", async () => {
@@ -771,6 +848,9 @@ describe("published browser API", () => {
       "music-planner",
       "music-planner-high-quality",
       "lyrics-writer",
+      "lyrics-writer-qwen-2b",
+      "lyrics-writer-rhymeai-e2b",
+      "lyrics-writer-rhymeai-e4b-v3",
     ]) {
       const fakeWorker = new FakeWorker();
       const runtime = new AceStepWebGpu({

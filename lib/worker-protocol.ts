@@ -4,6 +4,7 @@ import type {
   SamplerMode,
 } from "./generation-options";
 import type { AudioQuality } from "./model-manifest";
+import type { ResolvedLyricsModel } from "./lyrics-models";
 import type { PlannerMetadata } from "./planner";
 import type { PlannerProfileReport } from "./planner-profile";
 import type { PlannerQuality } from "./planner-quality";
@@ -46,11 +47,11 @@ export type StartRequest = {
 export type WriteLyricsRequest = {
   type: "write-lyrics";
   prompt: string;
+  systemPrompt: string;
   seed: number;
   durationSeconds: number;
   maxWords: number;
-  modelId: string;
-  revision: string;
+  model: ResolvedLyricsModel;
 };
 
 export type PlanMusicRequest = {

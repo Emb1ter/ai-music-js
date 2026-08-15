@@ -1,6 +1,8 @@
 /// <reference lib="webworker" />
 
 import {
+  AutoModelForCausalLM,
+  Gemma4ForCausalLM,
   Qwen3ForCausalLM,
   Qwen3_5ForCausalLM,
   AutoTokenizer,
@@ -38,13 +40,13 @@ import {
   type Fp32PlannerEmbeddingRowStore,
   type Fp32PlannerTimingEvent,
 } from "../lib/planner-fp32-webgpu";
+import { primeLocalTokenizerConfig } from "../lib/local-tokenizer-cache";
 import {
   PlannerProfiler,
   type PlannerInputFingerprint,
   type PlannerProfileTimingId,
 } from "../lib/planner-profile";
 import {
-  LYRICS_SYSTEM_PROMPT,
   buildLyricsRepairPrompt,
   buildTimedLyricsPrompt,
   cleanLyrics,
@@ -126,12 +128,7 @@ const asNumber = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
 const progressCallback =
-  (
-    group:
-      | "lyrics-writer"
-      | "music-planner"
-      | "music-planner-high-quality",
-  ) =>
+  (group: string) =>
   (event: unknown) => {
   if (!event || typeof event !== "object") return;
   const progress = event as Record<string, unknown>;
@@ -140,8 +137,8 @@ const progressCallback =
       ? progress.file
       : typeof progress.name === "string"
         ? progress.name
-        : group === "lyrics-writer"
-          ? "Qwen3.5 model"
+        : group.startsWith("lyrics-writer")
+          ? "lyric model"
           : group === "music-planner-high-quality"
             ? "ACE INT8-weight / FP32-compute 5 Hz planner"
             : "ACE 5 Hz planner";
@@ -161,9 +158,28 @@ const progressCallback =
   }
   };
 
+const lyricDownloadGroup = (modelId: string) => {
+  switch (modelId) {
+    case "qwen3.5-2b-q4f16":
+      return "lyrics-writer-qwen-2b";
+    case "rhymeai-gemma4-e2b-q4f16":
+      return "lyrics-writer-rhymeai-e2b";
+    case "rhymeai-gemma4-e4b-v3-q4f16":
+      return "lyrics-writer-rhymeai-e4b-v3";
+    default:
+      return "lyrics-writer";
+  }
+};
+
+type LyricsCausalModel =
+  | Awaited<ReturnType<typeof AutoModelForCausalLM.from_pretrained>>
+  | Awaited<ReturnType<typeof Gemma4ForCausalLM.from_pretrained>>
+  | Awaited<ReturnType<typeof Qwen3_5ForCausalLM.from_pretrained>>;
+
 const generateOnce = async (
-  model: Awaited<ReturnType<typeof Qwen3_5ForCausalLM.from_pretrained>>,
+  model: LyricsCausalModel,
   tokenizer: Awaited<ReturnType<typeof AutoTokenizer.from_pretrained>>,
+  systemPrompt: string,
   prompt: string,
   seed: number,
   temperature: number,
@@ -171,7 +187,7 @@ const generateOnce = async (
   random.seed(seed);
   const inputs = tokenizer.apply_chat_template(
     [
-      { role: "system", content: LYRICS_SYSTEM_PROMPT },
+      { role: "system", content: systemPrompt },
       { role: "user", content: prompt },
     ],
     {
@@ -179,7 +195,8 @@ const generateOnce = async (
       tokenize: true,
       return_tensor: true,
       return_dict: true,
-      tokenizer_kwargs: { enable_thinking: false },
+      // This is a chat-template variable, not a tokenizer encoding option.
+      ...({ enable_thinking: false } as { enable_thinking: boolean }),
     },
   );
   const inputLength = inputs.input_ids.dims.at(-1) ?? 0;
@@ -241,26 +258,64 @@ const writeLyrics = async (request: WriteLyricsRequest) => {
   if (onnxEnvironment.webgpu) {
     onnxEnvironment.webgpu.powerPreference = "high-performance";
   }
+  const localFilesOnly = Boolean(request.model.modelBaseUrl);
+  env.allowLocalModels = localFilesOnly;
+  env.allowRemoteModels = !localFilesOnly;
+  if (request.model.modelBaseUrl) {
+    env.localModelPath = request.model.modelBaseUrl;
+  }
 
   const timings: Record<string, number> = {};
   post(
     stage(
       "lyrics-model",
-      `Loading ${request.modelId} with Transformers.js and WebGPU.`,
+      `Loading ${request.model.label} with Transformers.js and WebGPU.`,
     ),
   );
   const loadStart = performance.now();
+  const downloadGroup = lyricDownloadGroup(request.model.id);
+  if (request.model.modelBaseUrl) {
+    if (!("caches" in self)) {
+      throw new Error(
+        "Browser model storage is unavailable for the self-hosted lyric model.",
+      );
+    }
+    await primeLocalTokenizerConfig(
+      request.model.modelBaseUrl,
+      request.model.modelId,
+      await caches.open(LANGUAGE_CACHE_NAME),
+      self.fetch.bind(self),
+    );
+  }
+  const modelOptions = {
+    revision: request.model.revision,
+    local_files_only: localFilesOnly,
+    device: "webgpu" as const,
+    dtype: request.model.dtype,
+    progress_callback: progressCallback(downloadGroup),
+  };
+  const modelPromise =
+    request.model.family === "gemma4"
+      ? Gemma4ForCausalLM.from_pretrained(
+          request.model.modelId,
+          modelOptions,
+        )
+      : request.model.family === "qwen3.5"
+        ? Qwen3_5ForCausalLM.from_pretrained(
+            request.model.modelId,
+            modelOptions,
+          )
+        : AutoModelForCausalLM.from_pretrained(
+            request.model.modelId,
+            modelOptions,
+          );
   const [tokenizer, model] = await Promise.all([
-    AutoTokenizer.from_pretrained(request.modelId, {
-      revision: request.revision,
-      progress_callback: progressCallback("lyrics-writer"),
+    AutoTokenizer.from_pretrained(request.model.modelId, {
+      revision: request.model.revision,
+      local_files_only: localFilesOnly,
+      progress_callback: progressCallback(downloadGroup),
     }),
-    Qwen3_5ForCausalLM.from_pretrained(request.modelId, {
-      revision: request.revision,
-      device: "webgpu",
-      dtype: "q4",
-      progress_callback: progressCallback("lyrics-writer"),
-    }),
+    modelPromise,
   ]);
   timings["lyrics-model-load"] = performance.now() - loadStart;
   post({
@@ -281,6 +336,7 @@ const writeLyrics = async (request: WriteLyricsRequest) => {
       await generateOnce(
         model,
         tokenizer,
+        request.systemPrompt,
         buildTimedLyricsPrompt(
           request.prompt,
           request.durationSeconds,
@@ -297,13 +353,14 @@ const writeLyrics = async (request: WriteLyricsRequest) => {
       post(
         stage(
           "lyrics-repair",
-          `Qwen is repairing its draft: ${issues.join("; ")}.`,
+          `The lyric model is repairing its draft: ${issues.join("; ")}.`,
         ),
       );
       lyrics = compactLyrics(
         await generateOnce(
           model,
           tokenizer,
+          request.systemPrompt,
           buildLyricsRepairPrompt(
             request.prompt,
             lyrics,
@@ -320,11 +377,11 @@ const writeLyrics = async (request: WriteLyricsRequest) => {
       issues = lyricQualityIssues(lyrics, request.maxWords);
     }
     if (!lyrics) {
-      throw new Error("Qwen returned empty lyrics.");
+      throw new Error("The lyric model returned empty lyrics.");
     }
     if (issues.length) {
       throw new Error(
-        `Qwen could not produce usable lyrics: ${issues.join("; ")}.`,
+        `The lyric model could not produce usable lyrics: ${issues.join("; ")}.`,
       );
     }
     timings["lyrics-generation"] = performance.now() - generationStart;
@@ -336,8 +393,8 @@ const writeLyrics = async (request: WriteLyricsRequest) => {
     const complete: LyricsCompleteUpdate = {
       type: "lyrics-complete",
       lyrics,
-      model: request.modelId,
-      revision: request.revision,
+      model: request.model.modelId,
+      revision: request.model.revision,
       seed: request.seed,
       durationSeconds: request.durationSeconds,
       maxWords: request.maxWords,

@@ -128,7 +128,11 @@ stay authoritative. Phase 2 places the generated metadata in the assistant
 reasoning prefix and generates exactly five semantic codes per final second.
 
 For vocals, either supply lyrics or set `writeLyrics: true` to create them
-locally with the pinned Qwen3.5 0.8B model. The caption must also request a
+locally with the selected lyric model. Qwen3.5 0.8B is the compact library
+default; Qwen3.5 2B and the smaller/larger RhymeAI Gemma 4 profiles are also
+built in. AI lyric writing also requires an application-owned
+`lyricsSystemPrompt`; the library does not silently choose a creative prompt.
+The caption must request a
 singer or vocals; a caption that only asks for an instrumental track
 contradicts the lyric conditioning and is rejected before model loading:
 
@@ -155,6 +159,8 @@ Sing it into daylight`,
 const aiWrittenVocal = await music.generate({
   prompt: "Bright electropop, expressive female lead, huge melodic chorus",
   writeLyrics: true,
+  lyricsSystemPrompt: RHYMEAI_P_LYRICS_SYSTEM_PROMPT,
+  lyricsModel: "rhymeai-gemma4-e4b-v3-q4f16",
   vocalLanguage: "en",
   seed: 1234,
   durationSeconds: 30,
@@ -162,6 +168,107 @@ const aiWrittenVocal = await music.generate({
   plannerQuality: "high-quality",
 });
 ```
+
+### Lyric-model selection and custom ONNX models
+
+Use a built-in model globally or override it on `generate()`/`writeLyrics()`:
+
+```ts
+const music = new AceStepWebGpu({
+  lyricsModel: "qwen3.5-0.8b-q4",
+});
+
+const lyrics = await music.writeLyrics({
+  prompt: "A funny, factual road-trip memory",
+  systemPrompt: RHYMEAI_P_LYRICS_SYSTEM_PROMPT,
+  lyricsModel: "rhymeai-gemma4-e4b-v3-q4f16",
+  durationSeconds: 30,
+});
+```
+
+The four built-in profile IDs are `qwen3.5-0.8b-q4`,
+`qwen3.5-2b-q4f16`, `rhymeai-gemma4-e2b-q4f16`, and
+`rhymeai-gemma4-e4b-v3-q4f16`. The RhymeAI E2B source publishes GGUF/LoRA
+rather than browser ONNX, so that profile expects the converted model tree at
+the same-origin `/local-lyrics-models/` path.
+
+#### Recommended system prompts
+
+Use **I** for every Qwen3.5 lyric model: 0.8B, 2B, the 2B uncensored variant,
+4B, and custom Qwen3.5 ONNX profiles. Use **P** only for RhymeAI models. These
+constants are documentation examples for application code; they are not
+embedded defaults in the library.
+
+```ts
+const QWEN_I_LYRICS_SYSTEM_PROMPT = `You write short, singable lyrics from the user's story.
+
+Accuracy comes first. Keep:
+- who does each action;
+- what happens;
+- why it happens;
+- where it happens;
+- the point of view, feelings, and requested tone.
+
+Do not replace, reverse, soften, or invent these facts. Keep names and places unchanged. Keep unusual, embarrassing, explicit, or ordinary details when the user supplies them. If space is tight, remove decoration before changing the main event, its cause, or its emotional meaning.
+
+Use the requested sections as a simple story:
+- verse: establish the real scene, action, and cause;
+- chorus: express the real feeling or payoff through one short hook.
+
+Use clear, grammatical, ordinary words. Each line must add a fact or strengthen the hook. Rhyme is optional; never distort meaning for rhyme. Avoid vague filler and invented backstory.
+
+Follow the exact language, section order, line counts, per-line limit, and total word limit. Return only the requested section tags and lyric lines. Add nothing before or after.`;
+
+const RHYMEAI_P_LYRICS_SYSTEM_PROMPT = `Write short, singable lyrics that preserve the user's real story.
+
+Natural meaning is mandatory. Rhyme is optional. Write each line in the clearest factual wording first. Use an end rhyme only when that wording already sounds natural and keeps the exact meaning.
+
+Never invent or replace a person, place, object, action, cause, feeling, or image merely to rhyme. Never use a malformed phrase, unnatural word order, vague metaphor, or generic conclusion merely because its final sound matches another line. An accurate unrhymed line is always better than an awkward rhymed line.
+
+Keep the real event and its cause in the verse. Give the chorus a short emotional payoff grounded in the source. Use direct, grammatical, ordinary language.
+
+Follow the requested language and word limit. Return only lyrics with bracketed section tags.`;
+```
+
+For a custom Qwen3.5 2B uncensored or 4B profile, pass I explicitly:
+
+```ts
+const lyrics = await music.writeLyrics({
+  prompt: userStory,
+  systemPrompt: QWEN_I_LYRICS_SYSTEM_PROMPT,
+  lyricsModel: customQwen35Profile,
+  durationSeconds: 60,
+});
+```
+
+Applications can supply any causal-language-model architecture supported by
+their installed Transformers.js version. Host a standard Transformers.js
+repository layout and describe the model explicitly:
+
+```ts
+const custom = new AceStepWebGpu({
+  lyricsModel: {
+    id: "my-songwriter",
+    label: "My songwriter",
+    family: "auto", // or "qwen3.5" / "gemma4"
+    modelId: "my-songwriter",
+    revision: "local",
+    dtype: "q4f16",
+    modelBaseUrl: "https://cdn.example.com/browser-models/",
+  },
+});
+```
+
+The example above loads
+`https://cdn.example.com/browser-models/my-songwriter/config.json`, tokenizer
+files, and the dtype-matching files under `onnx/`. Omit `modelBaseUrl` to load
+`modelId` from Hugging Face; pin `revision` for reproducible production use.
+Custom models must provide a tokenizer chat template and a supported causal-LM
+ONNX graph—arbitrary ONNX input/output contracts cannot be inferred. A
+cross-origin model host must permit browser CORS requests and, when the page
+uses cross-origin isolation, return a compatible `Cross-Origin-Resource-Policy`
+header. The application is responsible for the custom model's license and
+redistribution terms.
 
 The lyric writer uses the same normal-vocal budget as the backend:
 `max(40, round(durationSeconds × 7 / 6))` words. Use the exported
@@ -215,6 +322,22 @@ npm run demo:build
 npm exec vite preview -- --config examples/vite/vite.config.ts
 ```
 
+### Develop and compare lyric prompts
+
+The isolated lyric lab can switch among the qualified Qwen3.5 and RhymeAI
+Gemma models. It compares the
+current production prompt with an editable candidate prompt using identical
+seeds and sampling settings, and displays raw versus post-processed output:
+
+```bash
+npm run build
+npm run lyrics:lab
+```
+
+Open `http://localhost:3001`. The lab deliberately does not load the ACE-Step
+planner, DiT, or VAE, so prompt iteration is much faster than generating a
+complete song.
+
 ## API
 
 ### `new AceStepWebGpu(options?)`
@@ -254,8 +377,10 @@ const result = await music.generate({
   eight-step scheduler, semantic detokenizer, and validated FP32 WebGPU VAE.
 - `lyrics` enables vocal generation. Omit it or pass `[Instrumental]` for an
   instrumental result.
-- `writeLyrics: true` runs the pinned Qwen3.5 writer before planning. It is
+- `writeLyrics: true` runs the selected lyric writer before planning. It is
   mutually exclusive with supplying `lyrics`.
+- `lyricsModel` selects a built-in model or a custom Transformers.js ONNX
+  profile. It can be configured on the runtime or overridden per call.
 - `plannerQuality` selects the end-to-end preset: `turbo` (default) runs
   direct XL Turbo text/lyric conditioning with no 4B planner; `high-quality`
   runs the verified 4.63 GB INT8-weight / FP32-compute 5 Hz planner first,
@@ -373,6 +498,7 @@ await music.removeCachedModel("condition-encoder-int8");
 await music.removeCachedModel("music-planner");
 await music.removeCachedModel("music-planner-high-quality");
 await music.removeCachedModel("lyrics-writer");
+await music.removeCachedModel("lyrics-writer-rhymeai-e4b-v3");
 await music.clearCache();
 music.dispose();
 ```
@@ -447,8 +573,9 @@ is **4,633,150,982 bytes** (4.315 GiB), making planner plus standard audio
 **12,637,243,554 bytes** (11.769 GiB). The optional experimental split
 Q6-body/WebGPU-Q8 planner cache is **3,628,429,574 bytes**; it is exposed by
 `planMusic()` but is not part of the reliable Turbo preset because its ONNX
-body can exhaust the browser WASM heap during `OrtRun`. The optional Qwen3.5
-lyric writer is 489,166,749 bytes.
+body can exhaust the browser WASM heap during `OrtRun`. The default Qwen3.5
+lyric writer is 489,166,749 bytes; the optional RhymeAI Gemma 4 E4B v3 writer
+is 4,924,962,759 bytes.
 
 Verification status for this planner release:
 

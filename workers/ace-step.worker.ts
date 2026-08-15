@@ -543,8 +543,11 @@ const languageAssetUrl = (
   modelId: string,
   revision: string,
   fileName: string,
+  modelBaseUrl?: string,
 ) =>
-  `https://huggingface.co/${modelId}/resolve/${encodeURIComponent(revision)}/${fileName}`;
+  modelBaseUrl
+    ? new URL(`${modelId}/${fileName}`, new URL(modelBaseUrl, self.location.origin)).href
+    : `https://huggingface.co/${modelId}/resolve/${encodeURIComponent(revision)}/${fileName}`;
 
 const inspectLanguageModels = async () => {
   const cache =
@@ -552,6 +555,8 @@ const inspectLanguageModels = async () => {
   const cacheKeys = (await cache?.keys()) ?? [];
   const models = [];
   for (const component of LANGUAGE_MODEL_COMPONENTS) {
+    const modelBaseUrl =
+      "modelBaseUrl" in component ? component.modelBaseUrl : undefined;
     const assets: CachedAssetInfo[] = [];
     for (const asset of component.assets) {
       const response = await cache?.match(
@@ -559,6 +564,7 @@ const inspectLanguageModels = async () => {
           component.modelId,
           component.revision,
           asset.fileName,
+          modelBaseUrl,
         ),
       );
       const storedBytes = response
@@ -581,6 +587,7 @@ const inspectLanguageModels = async () => {
         component.modelId,
         component.revision,
         HIGH_QUALITY_PLANNER_EMBEDDING_FILE,
+        modelBaseUrl,
       );
       let rowCount = 0;
       let rowBytes = 0;
@@ -742,8 +749,16 @@ const removeCachedModel = async (modelId: string) => {
       "caches" in self
         ? await caches.open(LANGUAGE_CACHE_NAME)
         : null;
-    const prefix =
-      `https://huggingface.co/${languageComponent.modelId}/resolve/`;
+    const modelBaseUrl =
+      "modelBaseUrl" in languageComponent
+        ? languageComponent.modelBaseUrl
+        : undefined;
+    const prefix = modelBaseUrl
+      ? new URL(
+          `${languageComponent.modelId}/`,
+          new URL(modelBaseUrl, self.location.origin),
+        ).href
+      : `https://huggingface.co/${languageComponent.modelId}/resolve/`;
     for (const request of (await cache?.keys()) ?? []) {
       if (request.url.startsWith(prefix)) {
         await cache?.delete(request);

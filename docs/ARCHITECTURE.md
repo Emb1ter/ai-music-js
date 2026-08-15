@@ -6,7 +6,8 @@ creation never require a generation backend.
 
 ## End-to-end flow
 
-1. Optional lyric writing runs Qwen3.5 0.8B through Transformers.js/WebGPU.
+1. Optional lyric writing runs the selected Qwen3.5, Gemma 4, or supported
+   custom causal language model through Transformers.js/WebGPU.
 2. Optional high-quality planning runs the ACE-Step 5 Hz 4B planner:
    - Phase 1 reasons over BPM, duration, key scale, and time signature.
    - Phase 2 generates exactly `durationSeconds × 5` semantic codes with
@@ -27,7 +28,7 @@ creation never require a generation backend.
 
 | Component | Primary execution |
 |---|---|
-| Qwen3.5 lyric writer | Transformers.js + WebGPU |
+| Selectable lyric writer | Transformers.js + WebGPU |
 | ACE planner transformer body | ONNX Runtime WebGPU |
 | Planner FP32 audio-code head | Custom WebGPU compute shader |
 | Planner CFG and top-p sampling | Worker CPU JavaScript |

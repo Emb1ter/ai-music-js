@@ -30,6 +30,8 @@ import {
   LANGUAGE_MODEL_DOWNLOAD_BYTES,
   LYRICS_MODEL_DOWNLOAD_BYTES,
   PLANNER_MODEL_DOWNLOAD_BYTES,
+  QWEN35_2B_MODEL_DOWNLOAD_BYTES,
+  RHYMEAI_GEMMA4_E2B_MODEL_DOWNLOAD_BYTES,
 } from "../lib/language-model-manifest";
 
 describe("variable-duration tensor contracts", () => {
@@ -196,14 +198,21 @@ describe("pinned model manifest", () => {
       4_633_150_982,
     );
     expect(LYRICS_MODEL_DOWNLOAD_BYTES).toBe(489_166_749);
-    expect(LANGUAGE_MODEL_DOWNLOAD_BYTES).toBe(8_750_747_305);
+    expect(QWEN35_2B_MODEL_DOWNLOAD_BYTES).toBe(1_402_858_517);
+    expect(RHYMEAI_GEMMA4_E2B_MODEL_DOWNLOAD_BYTES).toBe(
+      3_130_549_798,
+    );
+    expect(LANGUAGE_MODEL_DOWNLOAD_BYTES).toBe(18_209_118_379);
     expect(TOTAL_DOWNLOAD_BYTES + LANGUAGE_MODEL_DOWNLOAD_BYTES).toBe(
-      14_377_241_534,
+      23_835_612_608,
     );
     expect(LANGUAGE_MODEL_COMPONENTS.map((model) => model.id)).toEqual([
       "music-planner",
       "music-planner-high-quality",
       "lyrics-writer",
+      "lyrics-writer-qwen-2b",
+      "lyrics-writer-rhymeai-e2b",
+      "lyrics-writer-rhymeai-e4b-v3",
     ]);
   });
 

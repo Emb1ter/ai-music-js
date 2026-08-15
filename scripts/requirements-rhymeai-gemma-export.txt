@@ -1,0 +1,5 @@
+gguf==0.19.0
+numpy==2.4.6
+onnx==1.22.0
+onnx-ir==0.2.1
+onnxruntime==1.28.0
